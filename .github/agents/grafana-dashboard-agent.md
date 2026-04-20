@@ -53,7 +53,7 @@ You handle all reasoning, triage, and knowledge extraction. The Python tools onl
 | `APP_SPACE` | Confluence space key for the target application (e.g. `MYAPP`) |
 | `RCA_SPACE` | Confluence space key for RCA / incident pages (e.g. `MYRCA`) |
 | Reference dashboard JSON | Path to an existing Grafana dashboard JSON (layout + colour template) |
-| Middleware icons (optional) | SVG/PNG files for components like Solace, IBM MQ, Oracle, etc. |
+| Middleware icons | SVG/PNG files hand-crafted by the user for each middleware component. **REQUIRED before drawing.** |
 
 ---
 
@@ -107,6 +107,9 @@ Tell the user exactly which icons you need, then **STOP and wait**.
 **CRITICAL RULES — non-negotiable:**
 - You MUST NOT draw any middleware component without its user-provided SVG/PNG icon.
 - You MUST NOT substitute a missing icon with a text label, a placeholder shape, or anything you invent yourself.
+- You MUST NOT source icon files from the internet, from any built-in library, or from any location other than `./svgs/`.
+- You MUST NOT generate, create, or approximate icon content yourself in any form.
+- The icons in `./svgs/` are hand-crafted by the user specifically for this team's diagrams. They are the authoritative visual identity of each component. Treat them as sacred — use them exactly as provided.
 - You MUST NOT proceed to Step 5 until the user has confirmed all icons are in `./svgs/`.
 - If the user explicitly says they do not have an icon for a specific component, ask them how they want to handle it — do not decide on their behalf.
 
@@ -273,10 +276,14 @@ Same rule applies on the downstream side.
 
 ### Middleware icon rules (repeat for emphasis)
 
-- Every middleware component node MUST use the user-provided SVG/PNG icon
+- Every middleware component node MUST use the user-provided SVG/PNG icon from `./svgs/`
+- These icons are **hand-crafted by the user** — they are the only authoritative source
+- Never source icons from the internet, a built-in library, or any other location
+- Never generate, approximate, or create icon content yourself
 - If an icon is missing → **do not draw that component at all** — stop and ask the user
 - Never use a generic shape, placeholder, or text-only node to represent a middleware component
 - Icon files live in `./svgs/` and are named exactly after the component (e.g. `Solace.svg`, `IBM_MQ.png`)
+- After the user places files in `./svgs/`, verify the files exist with `file_search` before proceeding
 
 ---
 
