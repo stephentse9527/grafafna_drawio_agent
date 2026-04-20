@@ -80,8 +80,8 @@ From each page, extract:
 - **App name** and description
 - **Upstreams** — name, which middleware they use to connect (Solace / MQ / REST / FileIT), logical group name
 - **Downstreams** — name, which middleware, logical category
-- **Business functions** — business-capability level names (e.g. "Debit Processing"), NOT technical components
-- **Business metrics** — metric name, group/banner name (e.g. "Debit"), whether it's a point-in-time stat or a trend
+- **Business functions** — business-capability level names (e.g. "Payment Processing"), NOT technical components
+- **Business metrics** — metric name, group/banner name (e.g. "Transactions"), whether it's a point-in-time stat or a trend
 - **Middleware components** — names of integration middleware (Solace, IBM MQ, Oracle, NAS, Hazelcast, etc.)
 
 Skip pages that are only meeting notes, HR, finance, changelogs, or unrelated apps.
@@ -128,14 +128,14 @@ Create `./output/knowledge.json` with this exact schema:
     }
   ],
   "business_functions": [
-    {"name": "Debit Processing", "description": null},
+    {"name": "Payment Processing", "description": null},
     {"name": "Credit Processing", "description": null}
   ],
   "business_metrics": [
     {
-      "name": "Debit TPS",
-      "group": "Debit",
-      "description": "Transactions per second for debit flow",
+      "name": "Payment TPS",
+      "group": "Transactions",
+      "description": "Transactions per second for payment flow",
       "is_instant": true,
       "common_issues": ["Spike indicates upstream retry storm"]
     }
@@ -145,7 +145,7 @@ Create `./output/knowledge.json` with this exact schema:
     {"name": "Oracle", "component_type": "database", "svg_provided": false, "svg_content": null}
   ],
   "upstream_groups": {
-    "Retail Channel": ["CCMS", "RLS", "IBNK"]
+    "Channel A": ["AuthService", "StorageService", "APIGateway"]
   },
   "downstream_groups": {
     "Clearing": ["SCPay"],

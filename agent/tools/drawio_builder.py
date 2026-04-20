@@ -79,8 +79,8 @@ class DrawIOBuilder:
     Usage::
 
         builder = DrawIOBuilder(color_scheme)
-        builder.add_solid_block("CCMS", rect, cell_id="c1")
-        builder.add_frame("Retail Channel", rect, cell_id="f1")
+        builder.add_solid_block("AuthService", rect, cell_id="c1")
+        builder.add_frame("Channel A", rect, cell_id="f1")
         builder.add_arrow("c1", "mw1")
         xml_string = builder.build()
     """

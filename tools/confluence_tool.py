@@ -76,7 +76,7 @@ def main() -> None:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     list_p = sub.add_parser("list", help="List all pages in a space")
-    list_p.add_argument("space_key", help="Confluence space key (e.g. MYAPP)")
+    list_p.add_argument("space_key", help="Confluence space key (e.g. APP_SPACE)")
 
     read_p = sub.add_parser("read", help="Read the content of a page")
     read_p.add_argument("page_id", help="Numeric Confluence page ID")

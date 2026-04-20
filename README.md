@@ -93,13 +93,13 @@ Place it somewhere accessible, e.g. `examples/reference_dashboard.json`.
 ### Example prompts
 
 ```
-Generate a Grafana dashboard for the MYAPP application.
-Confluence space: MYAPP, RCA space: MYRCA
+Generate a Grafana dashboard for the PaymentApp application.
+Confluence space: PAYMENT_APP, RCA space: PAYMENT_RCA
 Reference dashboard: ./examples/reference_dashboard.json
 ```
 
 ```
-Run the dashboard agent for space PAYMENTAPP, RCA space PAYMENTRCA,
+Run the dashboard agent for space PAYMENT_APP, RCA space PAYMENT_RCA,
 reference dashboard at ./examples/ref.json
 ```
 

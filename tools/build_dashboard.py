@@ -7,7 +7,7 @@ Usage
   python tools/build_dashboard.py \\
       --knowledge output/knowledge.json \\
       --example   examples/reference_dashboard.json \\
-      --flow-xml  output/myapp_flow.xml \\
+      --flow-xml  output/app_flow.xml \\
       --output    output/
 
   --knowledge   Path to knowledge.json produced by the agent session

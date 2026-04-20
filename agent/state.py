@@ -32,7 +32,7 @@ class BusinessFunction(BaseModel):
 
 class BusinessMetric(BaseModel):
     name: str
-    group: str                                # Banner label, e.g. "Debit", "Credit"
+    group: str                                # Banner label, e.g. "Transactions", "Accounts"
     description: Optional[str] = None
     is_instant: bool = True                   # True → stat panel, False → time series only
     common_issues: List[str] = Field(default_factory=list)   # Derived from RCA analysis
@@ -53,7 +53,7 @@ class AppKnowledge(BaseModel):
     business_functions: List[BusinessFunction] = Field(default_factory=list)
     business_metrics: List[BusinessMetric] = Field(default_factory=list)
     middleware_components: List[MiddlewareComponent] = Field(default_factory=list)
-    # Grouped upstreams: {"Retail Channel": ["CCMS", "RLS", "IBNK"], ...}
+    # Grouped upstreams: {"Channel A": ["AuthService", "StorageService", "APIGateway"], ...}
     upstream_groups: Dict[str, List[str]] = Field(default_factory=dict)
     # Grouped downstreams: {"Clearing": ["SCPay"], "Core Banking": ["EBUS"]}
     downstream_groups: Dict[str, List[str]] = Field(default_factory=dict)

@@ -7,7 +7,7 @@ Usage
   python tools/build_drawio.py \\
       --knowledge output/knowledge.json \\
       --example   examples/reference_dashboard.json \\
-      --output    output/myapp_flow.xml \\
+      --output    output/app_flow.xml \\
       [--svgs     svgs/]
 
   --knowledge   Path to knowledge.json produced by the agent session
@@ -30,17 +30,17 @@ knowledge.json schema (all fields optional except app_name):
      "connection_middleware": "REST API", "notes": null}
   ],
   "business_functions": [
-    {"name": "Debit Processing", "description": null}
+    {"name": "Payment Processing", "description": null}
   ],
   "business_metrics": [
-    {"name": "Debit TPS", "group": "Debit",
+    {"name": "Payment TPS", "group": "Transactions",
      "description": null, "is_instant": true, "common_issues": []}
   ],
   "middleware_components": [
     {"name": "Solace", "component_type": "messaging",
      "svg_provided": false, "svg_content": null}
   ],
-  "upstream_groups": {"Retail Channel": ["CCMS", "RLS"]},
+  "upstream_groups": {"Channel A": ["AuthService", "StorageService"]},
   "downstream_groups": {"Clearing": ["SCPay"]}
 }
 """
