@@ -98,19 +98,33 @@ Read relevant incident/RCA pages the same way. From each RCA page, identify:
 
 ### Step 4 — Collect middleware SVG/PNG icons (HARD REQUIREMENT — do not skip)
 
-List every middleware component you identified in Step 2 (e.g. Solace, IBM MQ, FileIT, Oracle, NAS, Hazelcast, HashiCorp, REST API).
+List every middleware component you identified in Step 2
+(e.g. Solace, IBM MQ, FileIT, Oracle, NAS, Hazelcast, HashiCorp, REST API).
 
-Tell the user exactly which icons you need, then **STOP and wait**.
+The following components are **already built in** — no user action needed:
 
-> "I found the following middleware components: [list]. Please provide an SVG or PNG icon file for each one and save them to `./svgs/` with the component name as the filename (e.g. `Solace.svg`, `Oracle.png`, `FileIT.svg`). I cannot proceed with drawing the flow diagram until all icons are provided."
+| Component | How it is rendered |
+|---|---|
+| **Solace** | SVG icon loaded from `.github/agents/svgs/solace.svg` |
+| **FileIT** | Built-in DrawIO shape (AWS Transfer Family, teal) |
+| **MQ / IBM MQ** | Built-in DrawIO shape (AWS Queue) |
+| **REST API** | Built-in DrawIO shape (Kubernetes API icon) |
+
+For any middleware component **NOT in the list above**, tell the user exactly
+which icons you need, then **STOP and wait**.
+
+> "I found the following additional middleware components: [list]. Please provide
+> an SVG or PNG icon file for each one and save them to `./svgs/` with the
+> component name as the filename (e.g. `Oracle.svg`, `Hazelcast.png`).
+> I cannot proceed with drawing the flow diagram until all icons are provided."
 
 **CRITICAL RULES — non-negotiable:**
-- You MUST NOT draw any middleware component without its user-provided SVG/PNG icon.
+- You MUST NOT draw any middleware component without either a built-in definition or a user-provided SVG/PNG icon.
 - You MUST NOT substitute a missing icon with a text label, a placeholder shape, or anything you invent yourself.
-- You MUST NOT source icon files from the internet, from any built-in library, or from any location other than `./svgs/`.
+- You MUST NOT source icon files from the internet, from any built-in library, or from any location other than `.github/agents/svgs/` or `./svgs/`.
 - You MUST NOT generate, create, or approximate icon content yourself in any form.
-- The icons in `./svgs/` are hand-crafted by the user specifically for this team's diagrams. They are the authoritative visual identity of each component. Treat them as sacred — use them exactly as provided.
-- You MUST NOT proceed to Step 5 until the user has confirmed all icons are in `./svgs/`.
+- You MUST NOT proceed to Step 5 until the user has confirmed all non-built-in icons are in `./svgs/`.
+- After the user places files in `./svgs/`, verify they exist with `file_search` before continuing.
 - If the user explicitly says they do not have an icon for a specific component, ask them how they want to handle it — do not decide on their behalf.
 
 ### Step 5 — Write knowledge.json
@@ -223,20 +237,39 @@ Strict left-to-right column order:
 
 ### THE MOST IMPORTANT RULE — Connection expression ⚠️
 
-This is the defining characteristic of our team's Flow diagram. **Every single connection MUST follow this exact three-part pattern:**
+This is the defining characteristic of our team's Flow diagram. **Every single
+connection MUST follow this exact three-part pattern:**
 
 ```
-[upstream block]  ──arrow──►  [middleware component node]  ──arrow──►  [APP frame]
-[APP frame]       ──arrow──►  [middleware component node]  ──arrow──►  [downstream block]
+[upstream block/frame]  ──arrow──►  [middleware component node]  ──arrow──►  [APP frame]
+[APP frame]             ──arrow──►  [middleware component node]  ──arrow──►  [downstream block/frame]
 ```
 
-**There is NO direct arrow from an upstream/downstream to the APP.** The middleware component node is always in between.
+**There is NO direct arrow from an upstream/downstream to the APP.** The
+middleware component node is always in between.
 
 The middleware component node:
-- Is a **standalone visual node** placed between the upstream column and the APP frame (or between APP frame and downstream column)
-- Renders the user-provided SVG/PNG icon prominently
-- Has the component name as a text label
-- Is NOT a label on an arrow — it is a discrete, positioned element in the diagram
+- Is a **standalone visual node** (icon box + the arrow passing through it)
+  placed between the upstream column and the APP frame
+- The arrow is part of the node — it spans from the upstream side to the APP side
+- Is **NOT** a label on an arrow — it is a discrete, positioned element
+
+**Technical implementation** (how `tools/build_drawio.py` works):
+- Each connection is a DrawIO GROUP cell containing:
+  1. A fixed-geometry arrow using `mxPoint` sourcePoint/targetPoint — NO source/target cell references
+  2. A rounded-rect icon box in the centre
+  3. The icon (built-in shape or user SVG) inside the box
+- The group LEFT edge = right edge of upstream frame
+- The group RIGHT edge = left edge of APP frame
+- The group CENTER Y = center Y of the upstream group it connects
+- This design makes it **physically impossible** for arrows to fold, fly off,
+  or connect to the wrong element — the arrow is a fixed line, not a routed edge.
+
+**Arrow error checklist** — if you see any of these in the output, the
+`knowledge.json` is likely wrong, NOT the drawing code:
+- Arrows pointing wrong direction: check `connection_middleware` field is correct
+- Missing connection: check `upstream_groups` / `downstream_groups` maps every upstream/downstream
+- Duplicate connections: check for duplicate entries in the groups
 
 ---
 
@@ -276,14 +309,19 @@ Same rule applies on the downstream side.
 
 ### Middleware icon rules (repeat for emphasis)
 
-- Every middleware component node MUST use the user-provided SVG/PNG icon from `./svgs/`
-- These icons are **hand-crafted by the user** — they are the only authoritative source
-- Never source icons from the internet, a built-in library, or any other location
+**Built-in (already available, no user action needed):**
+- `Solace` — SVG loaded from `.github/agents/svgs/solace.svg`
+- `FileIT` — built-in DrawIO AWS Transfer Family shape (teal)
+- `MQ` / `IBM MQ` — built-in DrawIO AWS Queue shape
+- `REST API` — built-in DrawIO Kubernetes API icon
+
+**User-provided (block until received):**
+- Every middleware component node NOT in the built-in list MUST use a user-provided SVG/PNG icon from `./svgs/`
+- These icons are hand-crafted by the user — they are the only authoritative source
+- Never source icons from the internet, a built-in library (other than the four above), or any other location
 - Never generate, approximate, or create icon content yourself
 - If an icon is missing → **do not draw that component at all** — stop and ask the user
-- Never use a generic shape, placeholder, or text-only node to represent a middleware component
-- Icon files live in `./svgs/` and are named exactly after the component (e.g. `Solace.svg`, `IBM_MQ.png`)
-- After the user places files in `./svgs/`, verify the files exist with `file_search` before proceeding
+- After the user places files in `./svgs/`, verify with `file_search` before proceeding
 
 ---
 

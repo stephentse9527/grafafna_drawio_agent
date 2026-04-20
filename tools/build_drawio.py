@@ -99,20 +99,41 @@ def extract_color_scheme(dashboard_json: Dict[str, Any]) -> ColorScheme:
 # SVG / PNG loader
 # ---------------------------------------------------------------------------
 
-def load_component_svgs(svgs_dir: Optional[Path]) -> Dict[str, str]:
-    """Load SVG and PNG files from a directory; key = filename stem."""
+def load_component_svgs(user_svgs_dir: Optional[Path]) -> Dict[str, str]:
+    """
+    Load SVG icon files for middleware components.
+
+    Priority (lower wins / higher overrides):
+      1. Built-in icons: .github/agents/svgs/*.svg  (Solace, etc.)
+      2. User-provided:  --svgs directory           (additional or override)
+
+    FileIT, MQ, and REST API use built-in DrawIO shapes (no SVG file needed).
+    Solace uses solace.svg from .github/agents/svgs/.
+    Any other middleware requires the user to supply an SVG/PNG.
+    """
     component_svgs: Dict[str, str] = {}
-    if svgs_dir is None or not svgs_dir.is_dir():
-        return component_svgs
-    for f in svgs_dir.glob("*.svg"):
-        component_svgs[f.stem] = f.read_text(encoding="utf-8", errors="replace")
-    for f in svgs_dir.glob("*.png"):
-        b64 = base64.b64encode(f.read_bytes()).decode()
-        component_svgs[f.stem] = (
-            f'<img src="data:image/png;base64,{b64}" '
-            f'style="width:100%;height:100%"/>'
-        )
+
+    # Load built-in SVGs from .github/agents/svgs/ (project root relative)
+    project_root = Path(__file__).parent.parent
+    builtin_dir = project_root / ".github" / "agents" / "svgs"
+    _load_dir_into(builtin_dir, component_svgs)
+
+    # Overlay user-provided SVGs (can override built-ins)
+    if user_svgs_dir and user_svgs_dir.is_dir():
+        _load_dir_into(user_svgs_dir, component_svgs)
+
     return component_svgs
+
+
+def _load_dir_into(directory: Path, target: Dict[str, str]) -> None:
+    if not directory.is_dir():
+        return
+    for f in sorted(directory.glob("*.svg")):
+        # Skip .drawio files; skip the icon variant if the main file exists
+        target[f.stem.lower()] = f.read_text(encoding="utf-8", errors="replace")
+    for f in sorted(directory.glob("*.png")):
+        b64 = base64.b64encode(f.read_bytes()).decode()
+        target[f.stem.lower()] = f'data:image/png;base64,{b64}'
 
 
 # ---------------------------------------------------------------------------
@@ -149,6 +170,7 @@ def main() -> None:
     example_json = json.loads(example_path.read_text(encoding="utf-8"))
     color_scheme = extract_color_scheme(example_json)
     component_svgs = load_component_svgs(Path(args.svgs) if args.svgs else None)
+    print(f"Loaded SVG icons: {list(component_svgs.keys()) or '(none — using built-in shapes)'}")
 
     xml = compose_flow_diagram(knowledge, color_scheme, component_svgs)
 
