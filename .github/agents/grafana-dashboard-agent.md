@@ -96,12 +96,19 @@ Read relevant incident/RCA pages the same way. From each RCA page, identify:
 - Which **business metric** would have caught the incident early
 - Add it to `business_metrics` with `"common_issues": ["brief description"]`
 
-### Step 4 — Ask for middleware SVG icons (optional but recommended)
+### Step 4 — Collect middleware SVG/PNG icons (HARD REQUIREMENT — do not skip)
 
-Tell the user which middleware components you found (e.g. Solace, Oracle, IBM MQ).
-Ask them to provide SVG or PNG icon files for any they have.
-Save them to `./svgs/` with the component name as the filename (e.g. `Solace.svg`, `Oracle.png`).
-If they don't have icons, you will use text labels only.
+List every middleware component you identified in Step 2 (e.g. Solace, IBM MQ, FileIT, Oracle, NAS, Hazelcast, HashiCorp, REST API).
+
+Tell the user exactly which icons you need, then **STOP and wait**.
+
+> "I found the following middleware components: [list]. Please provide an SVG or PNG icon file for each one and save them to `./svgs/` with the component name as the filename (e.g. `Solace.svg`, `Oracle.png`, `FileIT.svg`). I cannot proceed with drawing the flow diagram until all icons are provided."
+
+**CRITICAL RULES — non-negotiable:**
+- You MUST NOT draw any middleware component without its user-provided SVG/PNG icon.
+- You MUST NOT substitute a missing icon with a text label, a placeholder shape, or anything you invent yourself.
+- You MUST NOT proceed to Step 5 until the user has confirmed all icons are in `./svgs/`.
+- If the user explicitly says they do not have an icon for a specific component, ask them how they want to handle it — do not decide on their behalf.
 
 ### Step 5 — Write knowledge.json
 
@@ -185,21 +192,91 @@ python tools/build_dashboard.py \
 Tell the user:
 - Where the output files are
 - How to import the dashboard into Grafana (Dashboards → Import → Upload JSON file)
-- What middleware icons were missing (text labels were used instead)
+- Confirm every middleware component used its user-provided icon (no text substitutions were made)
 
 ---
 
 ## Flow Diagram Design Rules
 
-Layout order left → right: **UPSTREAM → MIDDLEWARE → APP → MIDDLEWARE → DOWNSTREAM**
+### Overall layout
 
-- **Solid filled blocks** → individual upstreams, downstreams, business functions
-- **Outline frames** → logical groups (e.g. "Retail Channel") and middleware components
-- **Arrows** → connections via middleware
-- Group upstreams that share the same middleware into one frame
-- Every upstream↔app and app↔downstream link MUST have an explicit arrow through a middleware frame
-- Business functions are business-capability level ONLY — never list individual processors or technical components
-- Colours come from the reference dashboard — never invent colours
+Strict left-to-right column order:
+```
+[UPSTREAM GROUPS]  →  [MIDDLEWARE-IN nodes]  →  [APP FRAME]  →  [MIDDLEWARE-OUT nodes]  →  [DOWNSTREAM GROUPS]
+```
+
+---
+
+### Visual elements
+
+| Element | Visual style | Used for |
+|---|---|---|
+| Solid filled block | Filled rectangle with border | Individual upstream, downstream, business function |
+| Outline frame | Dashed/thin-border rectangle with label | Logical group (e.g. "Retail Channel", "Corporate Channel", downstream category) |
+| Middleware component node | Icon (SVG/PNG) + text label below | Solace, IBM MQ, FileIT, Oracle, NAS, Hazelcast, REST API, etc. |
+| Arrow | Directed line | Connection between elements |
+
+---
+
+### THE MOST IMPORTANT RULE — Connection expression ⚠️
+
+This is the defining characteristic of our team's Flow diagram. **Every single connection MUST follow this exact three-part pattern:**
+
+```
+[upstream block]  ──arrow──►  [middleware component node]  ──arrow──►  [APP frame]
+[APP frame]       ──arrow──►  [middleware component node]  ──arrow──►  [downstream block]
+```
+
+**There is NO direct arrow from an upstream/downstream to the APP.** The middleware component node is always in between.
+
+The middleware component node:
+- Is a **standalone visual node** placed between the upstream column and the APP frame (or between APP frame and downstream column)
+- Renders the user-provided SVG/PNG icon prominently
+- Has the component name as a text label
+- Is NOT a label on an arrow — it is a discrete, positioned element in the diagram
+
+---
+
+### Grouping rule — keep the diagram clean
+
+If multiple upstreams connect to the APP via the **same middleware component** (e.g. Solace), they share **one single middleware node**, not separate ones.
+
+```
+[UpstreamA]  ─┐
+[UpstreamB]  ──┼──arrow──►  [Solace node]  ──arrow──►  [APP]
+[UpstreamC]  ─┘
+```
+
+This is mandatory. Never create duplicate middleware nodes for the same component on the same side. Duplicate nodes make the diagram cluttered and violate our design standard.
+
+Same rule applies on the downstream side.
+
+---
+
+### APP frame internal structure
+
+- The APP frame is an outline frame labelled with the app's functional service name
+- Inside it, each **business function** is a solid filled block
+- Infrastructure middleware used internally by the app (Oracle, NAS, Hazelcast, HashiCorp, etc.) are rendered as component nodes **inside** the APP frame, below the business function blocks
+- Business functions must be at **business-capability level only** — never individual processors, services, or technical sub-components
+
+---
+
+### Colour rules
+
+- Extract all colours from the user-provided reference dashboard JSON or its embedded Flow SVG
+- Apply the same colours consistently: same type of element → same colour throughout the diagram
+- Never invent or assume any colour value
+- If the reference dashboard uses a dark theme, preserve that theme
+
+---
+
+### Middleware icon rules (repeat for emphasis)
+
+- Every middleware component node MUST use the user-provided SVG/PNG icon
+- If an icon is missing → **do not draw that component at all** — stop and ask the user
+- Never use a generic shape, placeholder, or text-only node to represent a middleware component
+- Icon files live in `./svgs/` and are named exactly after the component (e.g. `Solace.svg`, `IBM_MQ.png`)
 
 ---
 
