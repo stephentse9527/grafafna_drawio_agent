@@ -125,12 +125,28 @@ def load_component_svgs(user_svgs_dir: Optional[Path]) -> Dict[str, str]:
     return component_svgs
 
 
+
+# SVG files in .github/agents/svgs/ that are REFERENCE TEMPLATES, not icon assets.
+# - Layout guides: show how the connection unit / combination looks
+# - Built-in component refs: FileIT / MQ / REST API use DrawIO built-in shapes,
+#   so their SVG reference files must NOT be loaded as icons (they show the full
+#   box+arrow pattern, not a standalone icon).
+_REFERENCE_TEMPLATE_STEMS: frozenset = frozenset({
+    "connection",                     # pure arrow layout guide — NOT a component icon
+    "how_connection_with_midleware",  # combination layout guide — NOT a component icon
+    # All other SVGs (fileit, mq, rest_api, solace, ...) ARE component icons and must load.
+})
+
+
 def _load_dir_into(directory: Path, target: Dict[str, str]) -> None:
+    """Load middleware icon SVG/PNG assets, skipping known reference templates."""
     if not directory.is_dir():
         return
     for f in sorted(directory.glob("*.svg")):
-        # Skip .drawio files; skip the icon variant if the main file exists
-        target[f.stem.lower()] = f.read_text(encoding="utf-8", errors="replace")
+        stem = f.stem.lower()
+        if stem in _REFERENCE_TEMPLATE_STEMS:
+            continue
+        target[stem] = f.read_text(encoding="utf-8", errors="replace")
     for f in sorted(directory.glob("*.png")):
         b64 = base64.b64encode(f.read_bytes()).decode()
         target[f.stem.lower()] = f'data:image/png;base64,{b64}'

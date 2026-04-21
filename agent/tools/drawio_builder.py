@@ -61,8 +61,9 @@ CONN_ICON_X = 109  # icon left offset (local)
 CONN_ICON_Y = 6    # icon top offset (local)
 CONN_ICON_W = 66   # icon width
 CONN_ICON_H = 26   # icon height
-CONN_LABEL_X = 122 # text label left offset (local, for built-in shapes)
-CONN_LABEL_W = 72  # text label width
+# Standard dimensions for user-provided middleware SVGs (91×40 or 96×40 → render at 91×40)
+CONN_SVG_W  = 91
+CONN_SVG_H  = 40
 
 # Column X positions
 UPSTREAM_COL_X   = 20
@@ -75,7 +76,6 @@ DOWNSTREAM_COL_X = CONN_RIGHT_X + CONN_UNIT_W  # 1014 ← downstream frames
 # ---------------------------------------------------------------------------
 # Built-in middleware component specs
 # Extracted from the provided .drawio files in .github/agents/svgs/
-# Solace is NOT listed here — its icon comes from solace.svg (loaded at runtime)
 # ---------------------------------------------------------------------------
 
 BUILTIN_COMPONENT_SPECS: Dict[str, Dict[str, Any]] = {
@@ -132,10 +132,13 @@ def _resolve_spec(name: str) -> Optional[Dict[str, Any]]:
 
 
 def _find_svg(name: str, component_svgs: Dict[str, str]) -> Optional[str]:
-    """Case-insensitive lookup in the component_svgs dict."""
-    key = name.lower().strip()
+    """Case-insensitive lookup in the component_svgs dict.
+    Normalises underscores/hyphens to spaces so 'rest_api' matches 'REST API'."""
+    def _norm(s: str) -> str:
+        return s.lower().strip().replace("_", " ").replace("-", " ")
+    needle = _norm(name)
     for k, v in component_svgs.items():
-        if k.lower().strip() == key:
+        if _norm(k) == needle:
             return v
     return None
 
@@ -256,112 +259,112 @@ class DrawIOBuilder:
         component_name: str,
         svg_content: Optional[str] = None,
         builtin_spec: Optional[Dict[str, Any]] = None,
-    ) -> str:
+        arrow_direction: str = "right",
+    ) -> None:
         """
-        Add a CONNECTION UNIT group at absolute position (abs_x, abs_y).
+        Add a CONNECTION UNIT at absolute position (abs_x, abs_y).
 
-        The group spans CONN_UNIT_W wide and CONN_UNIT_H tall and contains:
-          1. A fixed-geometry arrow (mxPoint, NO cell refs) — the only safe way
-             to draw a straight line that will never fold, bend, or detach.
-          2. A rounded-rect icon box in the centre of the group.
-          3. The icon (SVG image or built-in DrawIO shape).
-          4. An optional text label for built-in shapes that need one.
+        arrow_direction controls arrowhead placement:
+          "right" = arrow points right (→)  — upstream→app or app→downstream
+          "left"  = arrow points left  (←)  — reverse flow
+          "both"  = bidirectional (↔)
 
-        Positioning rule (caller's responsibility):
-          abs_x = right edge of the upstream/downstream frame
-          abs_x + CONN_UNIT_W = left edge of the APP frame (or downstream frame)
-          abs_y = group_center_y - CONN_UNIT_H / 2
+        Structure: ONE full-width arrow (placed first, z-order behind) +
+        icon box + icon/label (placed after, z-order in front of arrow).
         """
-        group_id = self._new_id()
-        arrow_id = self._new_id()
-        box_id   = self._new_id()
-        mid_y    = CONN_UNIT_H / 2
-        stroke   = self.cs.healthy_stroke
+        mid_y  = abs_y + CONN_UNIT_H / 2
+        stroke = self.cs.healthy_stroke
+        box_left  = abs_x + CONN_BOX_X
+        box_right = box_left + CONN_BOX_W
 
-        # 1. Group container (connectable=0 so it can't be wired by accident)
-        self._cells.append(dict(
-            id=group_id, value="", style="group",
-            vertex="1", connectable="0", parent="1",
-            x=abs_x, y=abs_y, w=CONN_UNIT_W, h=CONN_UNIT_H,
-        ))
+        # Arrow style based on direction
+        if arrow_direction == "right":
+            start_arrow = "none"
+            end_arrow   = "block"
+        elif arrow_direction == "left":
+            start_arrow = "block"
+            end_arrow   = "none"
+        else:  # both
+            start_arrow = "block"
+            end_arrow   = "block"
 
-        # 2. Fixed-geometry arrow — sourcePoint/targetPoint are LOCAL coords
-        #    inside the group. No source= or target= cell references.
-        #    edgeStyle=none prevents ANY routing. This eliminates every
-        #    possible cause of arrows flying, folding, or connecting to wrong cells.
+        # 1. ONE full-width arrow — placed FIRST so it is behind the box/icon (z-order)
         self._cells.append(dict(
-            id=arrow_id, value="",
+            id=self._new_id(), value="",
             style=(
                 f"edgeStyle=none;html=1;"
-                f"exitX=1;exitY=0.5;exitDx=0;exitDy=0;"
-                f"entryX=0;entryY=0.5;entryDx=0;entryDy=0;"
                 f"strokeColor={stroke};strokeWidth=2;"
-                f"startArrow=block;startFill=1;"
+                f"startArrow={start_arrow};startFill=1;"
+                f"endArrow={end_arrow};endFill=1;"
             ),
-            edge="1", parent=group_id,
-            source_point=(0, mid_y),
-            target_point=(CONN_UNIT_W, mid_y),
+            edge="1", parent="1",
+            source_point=(abs_x, mid_y),
+            target_point=(abs_x + CONN_UNIT_W, mid_y),
         ))
 
-        # 3. Icon box (rounded rect in centre of group)
-        self._cells.append(dict(
-            id=box_id, value="",
-            style=(
-                f"rounded=1;whiteSpace=wrap;html=1;"
-                f"strokeColor={stroke};strokeWidth=2;fillColor=#111217;"
-            ),
-            vertex="1", parent=group_id,
-            x=CONN_BOX_X, y=0, w=CONN_BOX_W, h=CONN_UNIT_H,
-        ))
-
-        # 4. Icon — SVG file takes priority over built-in shape
+        # 2. Middleware component visual.
+        #    User-provided SVGs already contain the complete box+icon+label — embed as-is.
+        #    Built-in specs fall back to drawing a separate box + DrawIO shape.
         if svg_content:
+            # The SVG (91×40) includes the rounded box, icon and label — one cell only.
             b64 = base64.b64encode(svg_content.encode("utf-8")).decode("ascii")
             self._cells.append(dict(
                 id=self._new_id(), value="",
                 style=(
-                    f"shape=image;verticalLabelPosition=bottom;"
-                    f"labelBackgroundColor=default;verticalAlign=top;"
-                    f"aspect=fixed;imageAspect=0;"
+                    f"shape=image;html=1;aspect=fixed;imageAspect=0;"
                     f"image=data:image/svg+xml,{b64};"
                 ),
-                vertex="1", parent=group_id,
-                x=CONN_ICON_X, y=CONN_ICON_Y, w=CONN_ICON_W, h=CONN_ICON_H,
+                vertex="1", connectable="0", parent="1",
+                x=abs_x + CONN_BOX_X - 1, y=abs_y - 1,
+                w=CONN_SVG_W, h=CONN_SVG_H,
             ))
-        elif builtin_spec:
+        else:
+            # No SVG — draw box + built-in shape or text label.
             self._cells.append(dict(
                 id=self._new_id(), value="",
-                style=builtin_spec["icon_style"],
-                vertex="1", parent=group_id,
-                x=builtin_spec["icon_x"], y=builtin_spec["icon_y"],
-                w=builtin_spec["icon_w"], h=builtin_spec["icon_h"],
+                style=(
+                    f"rounded=1;whiteSpace=wrap;html=1;"
+                    f"strokeColor={stroke};strokeWidth=2;fillColor=#111217;"
+                ),
+                vertex="1", connectable="0", parent="1",
+                x=box_left, y=abs_y, w=CONN_BOX_W, h=CONN_UNIT_H,
             ))
-            if builtin_spec.get("label"):
+            if builtin_spec and not builtin_spec.get("label_only"):
+                self._cells.append(dict(
+                    id=self._new_id(), value="",
+                    style=builtin_spec["icon_style"],
+                    vertex="1", connectable="0", parent="1",
+                    x=abs_x + builtin_spec["icon_x"], y=abs_y + builtin_spec["icon_y"],
+                    w=builtin_spec["icon_w"], h=builtin_spec["icon_h"],
+                ))
+                if builtin_spec.get("label"):
+                    lbl_x = abs_x + builtin_spec["icon_x"] + builtin_spec["icon_w"] + 2
+                    lbl_w = (abs_x + CONN_BOX_X + CONN_BOX_W) - lbl_x
+                    self._cells.append(dict(
+                        id=self._new_id(),
+                        value=html.escape(builtin_spec["label"]),
+                        style=(
+                            "text;html=1;align=left;verticalAlign=middle;"
+                            "whiteSpace=wrap;rounded=0;fillColor=none;"
+                            "fontColor=#FFFFFF;fontSize=12;fontFamily=Times New Roman;"
+                        ),
+                        vertex="1", connectable="0", parent="1",
+                        x=lbl_x, y=abs_y, w=lbl_w, h=CONN_UNIT_H,
+                    ))
+            else:
+                # Ultimate fallback: centred text label
+                label = (builtin_spec or {}).get("label") or component_name
                 self._cells.append(dict(
                     id=self._new_id(),
-                    value=html.escape(builtin_spec["label"]),
+                    value=html.escape(label),
                     style=(
                         "text;html=1;align=center;verticalAlign=middle;"
                         "whiteSpace=wrap;rounded=0;fillColor=none;"
-                        "fontColor=#FFFFFF;fontSize=14;fontFamily=Times New Roman;"
+                        "fontColor=#FFFFFF;fontSize=12;fontFamily=Times New Roman;"
                     ),
-                    vertex="1", parent=group_id,
-                    x=CONN_LABEL_X, y=0, w=CONN_LABEL_W, h=CONN_UNIT_H,
+                    vertex="1", connectable="0", parent="1",
+                    x=abs_x + CONN_BOX_X, y=abs_y, w=CONN_BOX_W, h=CONN_UNIT_H,
                 ))
-        else:
-            # Fallback text-only (agent should have blocked before reaching here)
-            self._cells.append(dict(
-                id=self._new_id(),
-                value=html.escape(component_name),
-                style=(
-                    "text;html=1;align=center;verticalAlign=middle;"
-                    "whiteSpace=wrap;rounded=0;fillColor=none;fontColor=#FFFFFF;fontSize=12;"
-                ),
-                vertex="1", parent=group_id,
-                x=CONN_BOX_X, y=0, w=CONN_BOX_W, h=CONN_UNIT_H,
-            ))
-
-        return group_id
 
     # ------------------------------------------------------------------ infra icon (inside app frame, no arrow)
 
@@ -502,47 +505,64 @@ def compose_flow_diagram(
     """
     builder = DrawIOBuilder(color_scheme)
     TOP = 40.0  # top margin
-
-    # ---- helper: group frame height ----
-    def frame_h(n_members: int) -> float:
-        return FRAME_PAD * 2 + 20 + n_members * BLOCK_H + max(0, n_members - 1) * BLOCK_GAP
+    CONN_UNIT_GAP = 8  # vertical gap between stacked connection units
 
     # ---- collect upstream groups (handle ungrouped upstreams as singletons) ----
     grouped_up = {m for members in knowledge.upstream_groups.values() for m in members}
-    all_up: List[Tuple[str, List[str]]] = list(knowledge.upstream_groups.items())
+    all_up_raw: List[Tuple[str, List[str]]] = list(knowledge.upstream_groups.items())
     for u in knowledge.upstreams:
         if u.name not in grouped_up:
-            all_up.append((u.name, [u.name]))
+            all_up_raw.append((u.name, [u.name]))
 
     # ---- collect downstream groups ----
     grouped_dn = {m for members in knowledge.downstream_groups.values() for m in members}
-    all_dn: List[Tuple[str, List[str]]] = list(knowledge.downstream_groups.items())
+    all_dn_raw: List[Tuple[str, List[str]]] = list(knowledge.downstream_groups.items())
     for d in knowledge.downstreams:
         if d.name not in grouped_dn:
-            all_dn.append((d.name, [d.name]))
+            all_dn_raw.append((d.name, [d.name]))
 
-    # ---- middleware lookup helpers ----
-    def up_mw(members: List[str]) -> str:
+    # ---- gather ALL unique middlewares per group (ordered, deduplicated) ----
+    def up_mws(members: List[str]) -> List[str]:
+        seen: List[str] = []
         for m in members:
             for u in knowledge.upstreams:
-                if u.name == m:
-                    return u.connection_middleware
-        return "Solace"
+                if u.name == m and u.connection_middleware not in seen:
+                    seen.append(u.connection_middleware)
+        return seen or ["Solace"]
 
-    def dn_mw(members: List[str]) -> str:
+    def dn_mws(members: List[str]) -> List[str]:
+        seen: List[str] = []
         for m in members:
             for d in knowledge.downstreams:
-                if d.name == m:
-                    return d.connection_middleware
-        return "Solace"
+                if d.name == m and d.connection_middleware not in seen:
+                    seen.append(d.connection_middleware)
+        return seen or ["Solace"]
 
-    # ---- compute column heights ----
-    def col_h(groups: List[Tuple[str, List[str]]]) -> float:
-        return sum(frame_h(len(m)) for _, m in groups) + max(0, len(groups) - 1) * GROUP_GAP
+    # Augment groups with their middleware lists
+    # (group_name, members, [mw1, mw2, ...])
+    all_up = [(n, m, up_mws(m)) for n, m in all_up_raw]
+    all_dn = [(n, m, dn_mws(m)) for n, m in all_dn_raw]
+
+    # ---- helper: frame height accounts for both blocks AND stacked conn units ----
+    def frame_h(n_members: int, n_mws: int) -> float:
+        block_h = FRAME_PAD * 2 + 20 + n_members * BLOCK_H + max(0, n_members - 1) * BLOCK_GAP
+        conn_h  = n_mws * CONN_UNIT_H + max(0, n_mws - 1) * CONN_UNIT_GAP + FRAME_PAD * 2
+        return max(block_h, conn_h)
+
+    def col_h(groups: List[Tuple[str, List[str], List[str]]]) -> float:
+        return (sum(frame_h(len(m), len(mws)) for _, m, mws in groups)
+                + max(0, len(groups) - 1) * GROUP_GAP)
+
+    # ---- infra = internal infra components only (NOT connection middleware) ----
+    conn_mw_names = {u.connection_middleware.lower() for u in knowledge.upstreams}
+    conn_mw_names |= {d.connection_middleware.lower() for d in knowledge.downstreams}
+    infra = [
+        mc for mc in knowledge.middleware_components
+        if mc.component_type in ("database", "cache", "file_transfer", "secret")
+        and mc.name.lower() not in conn_mw_names
+    ]
 
     n_fns = len(knowledge.business_functions)
-    infra = [mc for mc in knowledge.middleware_components
-             if mc.component_type in ("database", "cache", "file_transfer", "secret")]
     app_inner = (
         20 + n_fns * BLOCK_H + max(0, n_fns - 1) * BLOCK_GAP
         + (BLOCK_GAP + len(infra) * (BLOCK_H + BLOCK_GAP) if infra else 0)
@@ -554,10 +574,9 @@ def compose_flow_diagram(
 
     # ---- draw upstream column ----
     up_y = TOP
-    for name, members in all_up:
-        gh = frame_h(len(members))
+    for name, members, mws in all_up:
+        gh = frame_h(len(members), len(mws))
         if len(members) == 1 and name == members[0]:
-            # singleton: just a block, no outer frame
             builder.add_solid_block(members[0], Rect(UPSTREAM_COL_X, up_y, BLOCK_W, BLOCK_H))
         else:
             builder.add_frame(name, Rect(UPSTREAM_COL_X, up_y, UP_FRAME_W, gh))
@@ -567,26 +586,31 @@ def compose_flow_diagram(
                 iy += BLOCK_H + BLOCK_GAP
         up_y += gh + GROUP_GAP
 
-    # ---- draw left connection units ----
+    # ---- draw left connection units (one per middleware, stacked) ----
     up_y = TOP
-    for name, members in all_up:
-        gh = frame_h(len(members))
-        center_y = up_y + gh / 2
-        mw = up_mw(members)
-        builder.add_connection_unit(
-            abs_x=CONN_LEFT_X,
-            abs_y=center_y - CONN_UNIT_H / 2,
-            component_name=mw,
-            svg_content=_find_svg(mw, component_svgs),
-            builtin_spec=_resolve_spec(mw),
-        )
+    for name, members, mws in all_up:
+        gh = frame_h(len(members), len(mws))
+        total_conn_h = len(mws) * CONN_UNIT_H + max(0, len(mws) - 1) * CONN_UNIT_GAP
+        conn_start_y = up_y + (gh - total_conn_h) / 2
+        for i, mw in enumerate(mws):
+            cu_y = conn_start_y + i * (CONN_UNIT_H + CONN_UNIT_GAP)
+            builder.add_connection_unit(
+                abs_x=CONN_LEFT_X,
+                abs_y=cu_y,
+                component_name=mw,
+                svg_content=_find_svg(mw, component_svgs),
+                builtin_spec=_resolve_spec(mw),
+            )
         up_y += gh + GROUP_GAP
 
     # ---- draw app frame ----
     builder.add_frame(knowledge.app_name or "Application", Rect(APP_COL_X, TOP, APP_FRAME_W, app_h))
-    fn_y = TOP + FRAME_PAD + 20
+    app_block_w = APP_FRAME_W - FRAME_PAD * 2  # fill frame width
+    # Vertically centre the function blocks within the app frame
+    total_fn_h = n_fns * BLOCK_H + max(0, n_fns - 1) * BLOCK_GAP
+    fn_y = TOP + max(FRAME_PAD + 20, (app_h - total_fn_h) / 2)
     for fn in knowledge.business_functions:
-        builder.add_solid_block(fn.name, Rect(APP_COL_X + FRAME_PAD, fn_y, BLOCK_W, BLOCK_H))
+        builder.add_solid_block(fn.name, Rect(APP_COL_X + FRAME_PAD, fn_y, app_block_w, BLOCK_H))
         fn_y += BLOCK_H + BLOCK_GAP
     infra_y = fn_y + BLOCK_GAP
     for mc in infra:
@@ -598,25 +622,27 @@ def compose_flow_diagram(
         )
         infra_y += BLOCK_H + BLOCK_GAP
 
-    # ---- draw right connection units ----
+    # ---- draw right connection units (one per middleware, stacked) ----
     dn_y = TOP
-    for name, members in all_dn:
-        gh = frame_h(len(members))
-        center_y = dn_y + gh / 2
-        mw = dn_mw(members)
-        builder.add_connection_unit(
-            abs_x=CONN_RIGHT_X,
-            abs_y=center_y - CONN_UNIT_H / 2,
-            component_name=mw,
-            svg_content=_find_svg(mw, component_svgs),
-            builtin_spec=_resolve_spec(mw),
-        )
+    for name, members, mws in all_dn:
+        gh = frame_h(len(members), len(mws))
+        total_conn_h = len(mws) * CONN_UNIT_H + max(0, len(mws) - 1) * CONN_UNIT_GAP
+        conn_start_y = dn_y + (gh - total_conn_h) / 2
+        for i, mw in enumerate(mws):
+            cu_y = conn_start_y + i * (CONN_UNIT_H + CONN_UNIT_GAP)
+            builder.add_connection_unit(
+                abs_x=CONN_RIGHT_X,
+                abs_y=cu_y,
+                component_name=mw,
+                svg_content=_find_svg(mw, component_svgs),
+                builtin_spec=_resolve_spec(mw),
+            )
         dn_y += gh + GROUP_GAP
 
     # ---- draw downstream column ----
     dn_y = TOP
-    for name, members in all_dn:
-        gh = frame_h(len(members))
+    for name, members, mws in all_dn:
+        gh = frame_h(len(members), len(mws))
         if len(members) == 1 and name == members[0]:
             builder.add_solid_block(members[0], Rect(DOWNSTREAM_COL_X, dn_y, BLOCK_W, BLOCK_H))
         else:
