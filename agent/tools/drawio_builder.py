@@ -1105,8 +1105,9 @@ def compose_flow_diagram(
             gh = frame_h(len(members), len(mws))
             g_slug = _slug(name)
             if len(members) == 1 and name == members[0]:
+                block_y = up_y + (gh - BLOCK_H) / 2  # centre within slot
                 builder.add_solid_block(
-                    members[0], Rect(UPSTREAM_COL_X, up_y, BLOCK_W, BLOCK_H),
+                    members[0], Rect(UPSTREAM_COL_X, block_y, BLOCK_W, BLOCK_H),
                     cell_id=f"up_block_{g_slug}",
                 )
             else:
@@ -1174,8 +1175,9 @@ def compose_flow_diagram(
             gh = frame_h(len(members), len(mws))
             g_slug = _slug(name)
             if len(members) == 1 and name == members[0]:
+                block_y = dn_y + (gh - BLOCK_H) / 2  # centre within slot
                 builder.add_solid_block(
-                    members[0], Rect(DOWNSTREAM_COL_X, dn_y, BLOCK_W, BLOCK_H),
+                    members[0], Rect(DOWNSTREAM_COL_X, block_y, BLOCK_W, BLOCK_H),
                     cell_id=f"dn_block_{g_slug}",
                 )
             else:
