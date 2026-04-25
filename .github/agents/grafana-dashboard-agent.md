@@ -62,9 +62,18 @@ Some corporate VS Code installations include a pre-authenticated Confluence tool
 If Method A fails with HTTP 401 or 403, immediately:
 1. **Check the available tool list** — look for any tool whose name contains `confluence` (case-insensitive).
 2. If a Confluence tool is found, **use it instead** for all subsequent page reads. Pass the page URL or page ID directly; the tool handles authentication itself.
-3. If no Confluence tool is found, stop and report the 401/403 error to the user; ask them to verify `.env` credentials.
+3. If no Confluence tool is found, proceed to Method C.
 
-> **Decision rule:** If the first `confluence_list_pages_by_url` attempt returns HTTP 401/403 → switch to VS Code Confluence tool for all remaining calls. Do not retry Method A.
+**Method C — Manual Input Mode (when Confluence is permanently unavailable):**
+If both Method A and Method B fail (no working credentials, no VS Code tool), collect all required knowledge directly from the user via interactive questions:
+1. Inform the user: *"Confluence is unavailable. I will ask you questions directly to collect the information needed for the dashboard."*
+2. Skip Steps 1, 2, and 3. Jump directly to **Step 1M** (Manual Knowledge Collection).
+3. After Step 1M completes, proceed normally from **Step 4**.
+
+> **Decision rule:**
+> - Method A returns HTTP 401/403 → immediately try Method B (check tool list for VS Code Confluence tool).
+> - Method B also unavailable (no tool found) → switch to **Method C**: jump to **Step 1M**, skip Steps 1–3.
+> - Do not retry Method A after 401/403. Do not ask the user to fix credentials before attempting Method C.
 
 ---
 
@@ -78,49 +87,77 @@ This returns a JSON array of `{"id", "title", "url"}` objects covering the paren
 import httpx, os, json, re
 from dotenv import load_dotenv
 load_dotenv()
-base = os.environ["CONFLUENCE_BASE_URL"].rstrip("/")
-auth = (os.environ["CONFLUENCE_USERNAME"], os.environ["CONFLUENCE_API_TOKEN"])
+base  = os.environ["CONFLUENCE_BASE_URL"].rstrip("/")
+token = os.environ["CONFLUENCE_API_TOKEN"]
+user  = os.environ.get("CONFLUENCE_USERNAME", "")
+
+def _cf_get(url, params=None):
+    """Try Bearer auth first (Confluence Server PAT), then Basic Auth (Cloud)."""
+    # Attempt 1: PAT / Bearer token (Confluence Server / Data Center)
+    r = httpx.get(url, params=params,
+                  headers={"Authorization": f"Bearer {token}"},
+                  timeout=30, verify=False)
+    if r.status_code not in (401, 403):
+        r.raise_for_status()
+        return r
+    # Attempt 2: Basic Auth — email:api_token (Confluence Cloud)
+    if user:
+        r = httpx.get(url, params=params, auth=(user, token),
+                      timeout=30, verify=False)
+        if r.status_code not in (401, 403):
+            r.raise_for_status()
+            return r
+    raise ValueError(
+        f"HTTP {r.status_code} — all auth methods failed for {url}\n"
+        "Confluence Server / Data Center: set CONFLUENCE_API_TOKEN to a PAT "
+        "(Personal Access Token); CONFLUENCE_USERNAME can be blank.\n"
+        "Confluence Cloud: set CONFLUENCE_API_TOKEN to an API token and "
+        "CONFLUENCE_USERNAME to your email address."
+    )
 
 page_url = "FULL_PAGE_URL"  # ← replace with the URL the user provided
 
-# Step 1: resolve page URL → page ID via the content-by-title or tiny-link API
-# Try space+title extraction from the URL first
-m = re.search(r'/display/([^/]+)/(.+?)(?:\?|$)', page_url)
-if m:
-    space_key = m.group(1)
-    title_slug = m.group(2).replace('+', ' ').replace('%20', ' ')
-    resp = httpx.get(
-        f"{base}/rest/api/content",
-        params={"spaceKey": space_key, "title": title_slug, "expand": "version"},
-        auth=auth, timeout=30, verify=False
-    )
-    resp.raise_for_status()
+# Step 1: resolve page URL → page ID
+# Supports multiple Confluence URL formats:
+#   /display/SPACE/Title                           (Server classic)
+#   /wiki/spaces/SPACE/pages/12345/Title           (Cloud)
+#   /pages/12345  or  /pages/viewpage.action?pageId=12345
+m_display  = re.search(r'/display/([^/?#]+)/([^?#]+)', page_url)
+m_pages_id = re.search(r'/pages/(\d{5,})', page_url)          # numeric ID in path
+m_pageid   = re.search(r'[?&]pageId=(\d+)', page_url)          # ?pageId= query param
+
+parent_id, parent_title = None, None
+
+if m_display:
+    space_key  = m_display.group(1)
+    title_slug = m_display.group(2).replace('+', ' ').replace('%20', ' ').strip('/')
+    resp = _cf_get(f"{base}/rest/api/content",
+                   params={"spaceKey": space_key, "title": title_slug, "expand": "version"})
     results = resp.json().get("results", [])
     if not results:
-        raise ValueError(f"Could not find page with title '{title_slug}' in space '{space_key}'")
-    parent_id = results[0]["id"]
+        raise ValueError(f"No page found: space='{space_key}' title='{title_slug}'")
+    parent_id    = results[0]["id"]
     parent_title = results[0]["title"]
+elif m_pages_id:
+    parent_id = m_pages_id.group(1)
+elif m_pageid:
+    parent_id = m_pageid.group(1)
 else:
-    # URL is a direct page ID link: .../pages/12345678
-    m2 = re.search(r'/pages/(\d+)', page_url)
-    if not m2:
-        raise ValueError(f"Cannot extract page ID from URL: {page_url}")
-    parent_id = m2.group(1)
-    meta = httpx.get(f"{base}/rest/api/content/{parent_id}",
-                     params={"expand": "version"}, auth=auth, timeout=30, verify=False)
-    meta.raise_for_status()
+    raise ValueError(
+        f"Cannot extract page ID from URL: {page_url}\n"
+        "Expected formats: /display/SPACE/Title  OR  /pages/12345  OR  ?pageId=12345"
+    )
+
+if parent_title is None:
+    meta = _cf_get(f"{base}/rest/api/content/{parent_id}", params={"expand": "version"})
     parent_title = meta.json().get("title", parent_id)
 
 # Step 2: fetch parent page itself + all child pages
 pages = [{"id": parent_id, "title": parent_title, "url": page_url, "is_parent": True}]
 
-children_resp = httpx.get(
-    f"{base}/rest/api/content/{parent_id}/child/page",
-    params={"limit": 250, "expand": "version"},
-    auth=auth, timeout=30, verify=False
-)
-children_resp.raise_for_status()
-for c in children_resp.json().get("results", []):
+children = _cf_get(f"{base}/rest/api/content/{parent_id}/child/page",
+                   params={"limit": 250, "expand": "version"})
+for c in children.json().get("results", []):
     pages.append({"id": c["id"], "title": c["title"],
                   "url": f"{base}/pages/{c['id']}", "is_parent": False})
 
@@ -128,11 +165,13 @@ print(json.dumps(pages, indent=2))
 ```
 
 **Self-validation after running:**
-- Output must be a JSON array.
+- Output must be a JSON array with at least one entry.
 - The first entry must have `"is_parent": true`.
-- If empty `[]`, the URL or space key could not be resolved — ask the user to re-check the URL.
-- If HTTP 401/403 → switch to VS Code Confluence tool (see fallback rule above).
-- If SSL error → should never happen with `verify=False`; report exact error.
+- If empty `[]` → URL could not be resolved; verify the URL format and retry.
+- If `ValueError` about auth → check `.env` values (see error message for guidance).
+- If `ValueError` about page not found → the space key or title slug is wrong; try the `/pages/ID` URL format instead.
+- If HTTP 401/403 persists after both auth methods → switch to Method B (VS Code Confluence tool) or Method C (Step 1M).
+- If SSL error → should not happen with `verify=False`; report exact error.
 
 ### Skill: `confluence_read_page`
 
@@ -142,15 +181,31 @@ Fetches the plain-text body of a single Confluence page by its numeric ID.
 import httpx, os, re
 from dotenv import load_dotenv
 load_dotenv()
-base    = os.environ["CONFLUENCE_BASE_URL"].rstrip("/")
-auth    = (os.environ["CONFLUENCE_USERNAME"], os.environ["CONFLUENCE_API_TOKEN"])
+base  = os.environ["CONFLUENCE_BASE_URL"].rstrip("/")
+token = os.environ["CONFLUENCE_API_TOKEN"]
+user  = os.environ.get("CONFLUENCE_USERNAME", "")
+
+def _cf_get(url, params=None):
+    """Try Bearer auth first (Confluence Server PAT), then Basic Auth (Cloud)."""
+    r = httpx.get(url, params=params,
+                  headers={"Authorization": f"Bearer {token}"},
+                  timeout=30, verify=False)
+    if r.status_code not in (401, 403):
+        r.raise_for_status()
+        return r
+    if user:
+        r = httpx.get(url, params=params, auth=(user, token),
+                      timeout=30, verify=False)
+        if r.status_code not in (401, 403):
+            r.raise_for_status()
+            return r
+    raise ValueError(f"HTTP {r.status_code} — check CONFLUENCE_API_TOKEN / CONFLUENCE_USERNAME in .env")
+
 page_id = "PAGE_ID"   # ← replace with actual page ID
-resp = httpx.get(
+resp = _cf_get(
     f"{base}/rest/api/content/{page_id}",
     params={"expand": "body.storage,title"},
-    auth=auth, timeout=30, verify=False
 )
-resp.raise_for_status()
 data     = resp.json()
 title    = data.get("title", "")
 html_raw = data.get("body", {}).get("storage", {}).get("value", "")
@@ -176,20 +231,20 @@ print(text[:8000])   # print first 8000 chars for review
 ## Prerequisites Checklist (verify before starting)
 
 1. **`.env` exists** at the workspace root. If not, copy `.env.example` → `.env` and ask the user to fill it in.
-2. **`.env` has these values set:**
+2. **`.env` values (only required when Confluence is accessible):**
    - `CONFLUENCE_BASE_URL` — e.g. `https://confluence.yourcompany.com`
-   - `CONFLUENCE_USERNAME` — username or email for Confluence login
-   - `CONFLUENCE_API_TOKEN` — personal access token or password
+   - `CONFLUENCE_API_TOKEN` — PAT (Personal Access Token) for Confluence Server, or API token for Confluence Cloud
+   - `CONFLUENCE_USERNAME` — email address (Confluence Cloud only; leave blank for Confluence Server PAT)
 3. **Dependencies installed:** run `pip install -r requirements.txt` if not done.
 4. **Reference dashboard template:** already bundled at `.github/agents/grafana_json_standar/standar.json` — no user action needed.
-5. **Skill connectivity verified:** run the `confluence_list_pages_by_url` skill for the provided APP page URL. Apply the Validation Gate below before proceeding.
+5. **Skill connectivity check (skip if using Manual Input Mode):** run `confluence_list_pages_by_url` for the provided APP page URL.
 
 **Validation Gate — Prerequisites:**
-- `.env` file exists and contains non-empty values for all three Confluence variables.
 - `pip install -r requirements.txt` exits with code 0 and no import errors.
-- `confluence_list_pages_by_url` returns a valid JSON array with at least one entry.
-- If `confluence_list_pages_by_url` returns HTTP 401/403, check tool list for a VS Code Confluence tool and switch to it.
-- ❌ If any check fails → fix it and re-verify. Do not continue until all pass.
+- If using Confluence: `.env` exists with non-empty `CONFLUENCE_BASE_URL` and `CONFLUENCE_API_TOKEN`.
+- If `confluence_list_pages_by_url` returns HTTP 401/403 → try Method B (VS Code Confluence tool).
+- If both Method A and Method B fail → proceed directly with **Method C** (Step 1M); `.env` check is no longer a blocker.
+- ❌ `pip install` fails → fix dependencies first. Do not continue.
 
 ---
 
@@ -320,6 +375,128 @@ For each RCA page read, apply the Validation Gate before extracting:
 - ✅ `system_metrics` has exactly 5 items.
 - ✅ Each BM entry has `title` (non-empty string), `metrics` (list of 1–4 strings), `rca_source` (string or null).
 - ❌ Any rule above fails → fix the JSON before proceeding to Step 4.
+
+---
+
+### Step 1M — Manual Knowledge Collection (replaces Steps 1–3 when Confluence is unavailable)
+
+Use this step **only when all Confluence access methods (A, B) have failed**.
+Collect all information needed for `knowledge.json` and `rca_analysis.json` directly from the user using `vscode/askQuestions`.
+Ask in **5 rounds** — each round is one `vscode/askQuestions` call.
+
+> After completing all 5 rounds and writing both output files, proceed directly to **Step 4**.
+
+---
+
+**Round 1 — Application basics**
+
+Call `vscode/askQuestions` with:
+
+```
+questions:
+  - header: "Application Name"
+    question: "What is the application name? (e.g. CCMS, PayGateway, iSAP)"
+
+  - header: "Application Description"
+    question: "One sentence: what does this application do? (e.g. Processes retail channel payment instructions)"
+```
+
+---
+
+**Round 2 — Upstream systems**
+
+Call `vscode/askQuestions` with:
+
+```
+questions:
+  - header: "Upstream System Names"
+    question: "List ALL upstream systems, one per line. Leave blank if none."
+    # e.g.:  CCMS\neMBX\nAutoPayment
+
+  - header: "Upstream Groups"
+    question: "Group the upstreams — one group per line. Format: GroupName: Sys1, Sys2\nIf no grouping, each system is its own group."
+    # e.g.:  Retail Channel: CCMS, eMBX\nCorporate Channel: AutoPayment
+
+  - header: "Upstream Middleware"
+    question: "Which middleware does each upstream use? One per line. Format: SystemName: MQ\nBuilt-ins (no icon needed): MQ, Solace, REST API, FileIT"
+    # e.g.:  CCMS: Solace\neMBX: MQ\nAutoPayment: REST API
+```
+
+---
+
+**Round 3 — Downstream systems**
+
+Call `vscode/askQuestions` with:
+
+```
+questions:
+  - header: "Downstream System Names"
+    question: "List ALL downstream systems, one per line. Leave blank if none."
+
+  - header: "Downstream Groups"
+    question: "Group the downstreams — one group per line. Format: GroupName: Sys1, Sys2"
+    # e.g.:  Clearing: SCPay, VisaNet\nCore Banking: EBUS
+
+  - header: "Downstream Middleware"
+    question: "Which middleware connects to each downstream? One per line. Format: SystemName: REST API"
+    # e.g.:  SCPay: REST API\nEBUS: MQ
+```
+
+---
+
+**Round 4 — Business functions and metrics**
+
+Call `vscode/askQuestions` with:
+
+```
+questions:
+  - header: "Business Functions"
+    question: "List the app's business functions, one per line. Business-capability level only (e.g. Payment Processing, Credit Enquiry)."
+
+  - header: "Top 3 Business Metrics"
+    question: "The 3 most important monitored metrics. One per line. Format: MetricGroup: Metric1, Metric2\n(e.g. DDI: DDI Req Count, DDI Resp Count)"
+
+  - header: "System Metrics (optional)"
+    question: "5 system-level metrics to monitor (queue depth, DB connections, CPU, memory, error rate). One per line. Leave blank to use defaults."
+```
+
+---
+
+**Round 5 — Internal middleware components**
+
+Call `vscode/askQuestions` with:
+
+```
+questions:
+  - header: "Internal Middleware Components"
+    question: "List all middleware the app uses internally (databases, caches, file systems, secrets). One per line. Format: Name: type\nTypes: messaging, database, file_transfer, cache, secret"
+    # e.g.:  Oracle: database\nHazelcast: cache\nNAS: file_transfer
+```
+
+---
+
+**After Round 5 — synthesise output files**
+
+From all answers, write two files:
+
+1. **`output/knowledge.json`** — follow the schema in Step 5 exactly. Derive all fields from the answers:
+   - `upstreams`: one entry per upstream, `connection_middleware` from Round 2 answer
+   - `upstream_groups` / `downstream_groups`: from the grouping answers in Rounds 2 & 3
+   - `business_functions`: from Round 4 answer
+   - `middleware_components`: include both connection middleware (from Rounds 2 & 3) and internal components (from Round 5)
+
+2. **`output/rca_analysis.json`** — follow the schema in Step 3:
+   - `top_business_metrics`: from Round 4 "Top 3 Business Metrics" (pad to 3 if fewer given)
+   - `system_metrics`: from Round 4 "System Metrics" (use defaults if blank)
+
+**Validation Gate — Step 1M:**
+- ✅ All 5 rounds completed; no required field is blank.
+- ✅ `output/knowledge.json` passes the Step 5 validation script.
+- ✅ `output/rca_analysis.json` has exactly 3 BM items and 5 system metric items.
+- ❌ Any required field empty → re-ask that specific question before writing files.
+- ❌ Validation script fails → fix the JSON, re-validate. Do not proceed to Step 4 until both files pass.
+
+---
 
 ### Step 4 — Collect middleware SVG/PNG icons (HARD REQUIREMENT — do not skip)
 
