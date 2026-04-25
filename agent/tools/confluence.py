@@ -104,7 +104,7 @@ class ConfluenceClient:
         """Return a list of page metadata dicts for all pages in a space."""
         url = f"{self._base_url}/rest/api/content"
         params = {"spaceKey": space_key, "limit": 250, "expand": "version"}
-        async with httpx.AsyncClient(auth=self._auth, timeout=30) as client:
+        async with httpx.AsyncClient(auth=self._auth, timeout=30, verify=False) as client:
             response = await client.get(url, params=params)
             response.raise_for_status()
             data = response.json()
@@ -115,7 +115,7 @@ class ConfluenceClient:
         try:
             url = f"{self._base_url}/rest/api/content/{page_id}"
             params = {"expand": "body.storage,title"}
-            async with httpx.AsyncClient(auth=self._auth, timeout=30) as client:
+            async with httpx.AsyncClient(auth=self._auth, timeout=30, verify=False) as client:
                 response = await client.get(url, params=params)
                 response.raise_for_status()
                 data = response.json()
@@ -135,7 +135,7 @@ class ConfluenceClient:
         cql = f'space="{space_key}" AND text~"{query}"'
         url = f"{self._base_url}/rest/api/content/search"
         try:
-            async with httpx.AsyncClient(auth=self._auth, timeout=30) as client:
+            async with httpx.AsyncClient(auth=self._auth, timeout=30, verify=False) as client:
                 resp = await client.get(url, params={"cql": cql, "limit": limit})
                 resp.raise_for_status()
                 return resp.json().get("results", [])

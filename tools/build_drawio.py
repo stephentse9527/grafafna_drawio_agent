@@ -57,7 +57,7 @@ from typing import Any, Dict, Optional
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from agent.state import AppKnowledge, ColorScheme
-from agent.tools.drawio_builder import compose_flow_diagram
+from agent.tools.drawio_builder import compose_flow_diagram, DrawIOOutput
 from agent.tools.grafana_builder import FLOW_PANEL_TYPES
 
 
@@ -166,7 +166,8 @@ def main() -> None:
     parser.add_argument("--example", required=True,
                         help="Path to the reference Grafana dashboard JSON")
     parser.add_argument("--output", required=True,
-                        help="Output path for the DrawIO XML file")
+                        help="Output path for the .drawio source file (e.g. output/app_flow.drawio). "
+                             "A matching .svg wrapper is written to the same directory automatically.")
     parser.add_argument("--svgs", default=None,
                         help="Directory containing SVG/PNG icon files (optional)")
     args = parser.parse_args()
@@ -183,16 +184,25 @@ def main() -> None:
         sys.exit(1)
 
     knowledge = AppKnowledge(**json.loads(knowledge_path.read_text(encoding="utf-8")))
-    example_json = json.loads(example_path.read_text(encoding="utf-8"))
+    _raw = example_path.read_text(encoding="utf-8")
+    example_json, _ = json.JSONDecoder().raw_decode(_raw)
     color_scheme = extract_color_scheme(example_json)
     component_svgs = load_component_svgs(Path(args.svgs) if args.svgs else None)
     print(f"Loaded SVG icons: {list(component_svgs.keys()) or '(none — using built-in shapes)'}")
 
-    xml = compose_flow_diagram(knowledge, color_scheme, component_svgs)
+    result = compose_flow_diagram(knowledge, color_scheme, component_svgs)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(xml, encoding="utf-8")
-    print(f"DrawIO XML written to: {output_path}")
+
+    # --- .drawio source file (the editable mxGraphModel XML) ---
+    drawio_path = output_path.with_suffix(".drawio")
+    drawio_path.write_text(result.xml, encoding="utf-8")
+    print(f"DrawIO source written to: {drawio_path}")
+
+    # --- .svg wrapper file (DrawIO SVG; use as diagram source in Grafana JSON) ---
+    svg_path = output_path.with_suffix(".svg")
+    svg_path.write_text(result.svg, encoding="utf-8")
+    print(f"DrawIO SVG    written to: {svg_path}")
 
 
 if __name__ == "__main__":

@@ -34,11 +34,61 @@ from __future__ import annotations
 
 import base64
 import html
+import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 import xml.etree.ElementTree as ET
 
 from agent.state import AppKnowledge, ColorScheme
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _slug(name: str) -> str:
+    """Convert a display name to a safe DrawIO cell-ID segment.
+    e.g. 'REST API' → 'rest_api', 'HSBC Connection' → 'hsbc_connection'
+    """
+    s = re.sub(r'[^a-z0-9]+', '_', name.lower().strip())
+    return s.strip('_') or 'x'
+
+
+@dataclass
+class DrawIOOutput:
+    """Result from compose_flow_diagram.
+
+    xml      — mxGraphModel XML string; write as .drawio source file.
+    svg      — DrawIO-compatible SVG wrapper; embed in Grafana FlowCharting panel.
+    canvas_w — diagram canvas width  (pixels)
+    canvas_h — diagram canvas height (pixels)
+    """
+    xml: str
+    svg: str
+    canvas_w: int
+    canvas_h: int
+
+
+def _make_svg_wrapper(xml: str, canvas_w: int, canvas_h: int,
+                      bg: str = "#181B1F") -> str:
+    """Wrap a DrawIO mxGraphModel XML string in a DrawIO-compatible SVG container.
+
+    The SVG uses the ``content`` attribute (HTML-escaped XML) so that:
+    - DrawIO desktop / app.diagrams.net can re-open it for editing.
+    - Grafana FlowCharting panel can read the diagram source from it.
+    """
+    content_attr = html.escape(xml, quote=True)
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" '
+        f'xmlns:xlink="http://www.w3.org/1999/xlink" '
+        f'version="1.1" '
+        f'width="{canvas_w}px" height="{canvas_h}px" '
+        f'viewBox="-0.5 -0.5 {canvas_w} {canvas_h}" '
+        f'content="{content_attr}" '
+        f'style="background-color: {bg};">'
+        f'<defs/><g/>'
+        f'</svg>'
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -48,9 +98,22 @@ from agent.state import AppKnowledge, ColorScheme
 BLOCK_W   = 120   # solid block width
 BLOCK_H   = 36    # solid block height
 BLOCK_GAP = 10    # vertical gap between blocks inside a frame
-FRAME_PAD = 16    # padding around blocks inside a frame
-GROUP_GAP = 24    # vertical gap between groups in the same column
+FRAME_PAD = 14    # padding around blocks inside a frame
+GROUP_GAP = 20    # vertical gap between groups in the same column
 APP_FRAME_W = 260 # app frame width
+
+# ---- SVG Style Standard (v2) -----------------------------------------------
+# UPSTREAM / DOWNSTREAM group frames:  dashed gray border, pt=2, no fill
+#   strokeColor=#888888, dashed=1, dashPattern=8 4, strokeWidth=2, fillColor=none
+# APP frame:                           solid green border (cs.frame_stroke)
+# INFRA group box:                     dashed gray border, pt=2, no fill (same as up/dn groups)
+# Solid blocks (upstream/downstream member nodes): fillColor=cs.healthy_fill
+# Connection arrow:                    strokeColor=cs.healthy_stroke, strokeWidth=2
+# Infra item box:                      rounded, strokeColor=cs.frame_stroke, fillColor=#1a1d23
+# ----------------------------------------------------------------------------
+GROUP_FRAME_STROKE   = "#888888"   # dashed gray for logical grouping frames
+GROUP_FRAME_DASHPAT  = "dashed=1;dashPattern=8 4;"  # pt-2 dashed line
+GROUP_STROKE_WIDTH   = "2"
 
 # Connection unit dimensions (from solace.drawio / fileit.drawio etc.)
 CONN_UNIT_W = 291  # total group width (left tail + icon box + right tail)
@@ -65,13 +128,38 @@ CONN_ICON_H = 26   # icon height
 CONN_SVG_W  = 91
 CONN_SVG_H  = 40
 
+# Infra grid layout constants
+INFRA_COLS       = 2      # 2 items per row — optimal for 4 infra items
+INFRA_ITEM_W     = 108    # width of each infra item box
+INFRA_ITEM_H     = 32     # height of each infra item box
+INFRA_H_GAP      = 10     # horizontal gap between items in a row
+INFRA_V_GAP      = 8      # vertical gap between rows
+INFRA_GROUP_PAD  = 10     # padding inside the infra group box
+INFRA_GROUP_LABEL_H = 18  # height for group label at top of infra group box
+
 # Column X positions
 UPSTREAM_COL_X   = 20
-UP_FRAME_W       = BLOCK_W + FRAME_PAD * 2     # 152
-CONN_LEFT_X      = UPSTREAM_COL_X + UP_FRAME_W # 172  ← connection units, left side
-APP_COL_X        = CONN_LEFT_X + CONN_UNIT_W   # 463  ← app frame left edge
-CONN_RIGHT_X     = APP_COL_X + APP_FRAME_W     # 723  ← connection units, right side
-DOWNSTREAM_COL_X = CONN_RIGHT_X + CONN_UNIT_W  # 1014 ← downstream frames
+UP_FRAME_W       = BLOCK_W + FRAME_PAD * 2     # 148
+CONN_LEFT_X      = UPSTREAM_COL_X + UP_FRAME_W # left connection units
+APP_COL_X        = CONN_LEFT_X + CONN_UNIT_W   # app frame left edge
+CONN_RIGHT_X     = APP_COL_X + APP_FRAME_W     # right connection units
+DOWNSTREAM_COL_X = CONN_RIGHT_X + CONN_UNIT_W  # downstream frames
+
+# ---------------------------------------------------------------------------
+# Z5-MAIN target aspect + auto-layout thresholds
+# Z5-MAIN panel: 18w × 18h grid units  →  ~900px wide × 540px tall (5:3)
+# (Grafana default: ~50px/col, 30px/row at a 1200px-wide dashboard)
+# ---------------------------------------------------------------------------
+Z5_PANEL_ASPECT = 5.0 / 3.0  # target canvas width:height to fill Z5-MAIN panel
+
+# Left-to-right layout limits: exceed either threshold → auto-switch to TB
+LR_ASPECT_LIMIT = 2.5  # LR canvas w:h beyond this is too wide for Z5-MAIN
+LR_MAX_GROUPS   = 4    # either side having more groups than this → use TB
+
+# Top-to-bottom layout constants
+TB_MARGIN  = 24   # outer margin on all four sides of the TB canvas
+TB_H_GAP   = 16   # horizontal gap between groups in the same TB row
+TB_CONN_H  = 52   # vertical space allocated to each connection zone (arrow + label)
 
 # ---------------------------------------------------------------------------
 # Built-in middleware component specs
@@ -229,19 +317,26 @@ class DrawIOBuilder:
         font_size: int = 12,
         bold: bool = True,
         dashed: bool = False,
+        stroke_width: int = 1,
         parent: str = "1",
     ) -> str:
         cell_id = cell_id or self._new_id()
         s  = stroke     or self.cs.frame_stroke
         fc = font_color or self.cs.text_color_on_frame
-        dash   = "dashed=1;" if dashed else "dashed=0;"
+        if dashed:
+            dash = GROUP_FRAME_DASHPAT
+            s = GROUP_FRAME_STROKE
+            fc = GROUP_FRAME_STROKE
+        else:
+            dash = "dashed=0;"
+        sw = f"strokeWidth={stroke_width};"
         valign = "verticalAlign=top;" if label_position == "top" else "verticalAlign=middle;"
         style = (
             f"rounded=0;whiteSpace=wrap;html=1;"
             f"fillColor=none;strokeColor={s};"
             f"fontColor={fc};fontSize={font_size};"
             f"fontStyle={'1' if bold else '0'};"
-            f"{valign}{dash}"
+            f"{valign}{dash}{sw}"
         )
         self._cells.append(dict(
             id=cell_id, value=html.escape(label), style=style,
@@ -260,9 +355,15 @@ class DrawIOBuilder:
         svg_content: Optional[str] = None,
         builtin_spec: Optional[Dict[str, Any]] = None,
         arrow_direction: str = "right",
+        base_id: Optional[str] = None,
     ) -> None:
         """
         Add a CONNECTION UNIT at absolute position (abs_x, abs_y).
+
+        base_id: meaningful prefix for all internal cell IDs, e.g.
+                 "cu_up_ccms_solace" → produces cells
+                 "cu_up_ccms_solace_arrow", "cu_up_ccms_solace_box", etc.
+                 Falls back to auto-incrementing IDs when omitted.
 
         arrow_direction controls arrowhead placement:
           "right" = arrow points right (→)  — upstream→app or app→downstream
@@ -272,6 +373,9 @@ class DrawIOBuilder:
         Structure: ONE full-width arrow (placed first, z-order behind) +
         icon box + icon/label (placed after, z-order in front of arrow).
         """
+        def _cid(suffix: str) -> str:
+            return f"{base_id}_{suffix}" if base_id else self._new_id()
+
         mid_y  = abs_y + CONN_UNIT_H / 2
         stroke = self.cs.healthy_stroke
         box_left  = abs_x + CONN_BOX_X
@@ -289,10 +393,14 @@ class DrawIOBuilder:
             end_arrow   = "block"
 
         # 1. ONE full-width arrow — placed FIRST so it is behind the box/icon (z-order)
+        # exitX/exitY and entryX/entryY pin the endpoints to the connection-point
+        # edge of the adjacent frames so DrawIO shows a logically connected graph.
         self._cells.append(dict(
-            id=self._new_id(), value="",
+            id=_cid("arrow"), value="",
             style=(
-                f"edgeStyle=none;html=1;"
+                f"edgeStyle=orthogonalEdgeStyle;html=1;"
+                f"exitX=1;exitY=0.5;exitDx=0;exitDy=0;"
+                f"entryX=0;entryY=0.5;entryDx=0;entryDy=0;"
                 f"strokeColor={stroke};strokeWidth=2;"
                 f"startArrow={start_arrow};startFill=1;"
                 f"endArrow={end_arrow};endFill=1;"
@@ -309,7 +417,7 @@ class DrawIOBuilder:
             # The SVG (91×40) includes the rounded box, icon and label — one cell only.
             b64 = base64.b64encode(svg_content.encode("utf-8")).decode("ascii")
             self._cells.append(dict(
-                id=self._new_id(), value="",
+                id=_cid("svg"), value="",
                 style=(
                     f"shape=image;html=1;aspect=fixed;imageAspect=0;"
                     f"image=data:image/svg+xml,{b64};"
@@ -321,7 +429,7 @@ class DrawIOBuilder:
         else:
             # No SVG — draw box + built-in shape or text label.
             self._cells.append(dict(
-                id=self._new_id(), value="",
+                id=_cid("box"), value="",
                 style=(
                     f"rounded=1;whiteSpace=wrap;html=1;"
                     f"strokeColor={stroke};strokeWidth=2;fillColor=#111217;"
@@ -331,7 +439,7 @@ class DrawIOBuilder:
             ))
             if builtin_spec and not builtin_spec.get("label_only"):
                 self._cells.append(dict(
-                    id=self._new_id(), value="",
+                    id=_cid("icon"), value="",
                     style=builtin_spec["icon_style"],
                     vertex="1", connectable="0", parent="1",
                     x=abs_x + builtin_spec["icon_x"], y=abs_y + builtin_spec["icon_y"],
@@ -341,7 +449,7 @@ class DrawIOBuilder:
                     lbl_x = abs_x + builtin_spec["icon_x"] + builtin_spec["icon_w"] + 2
                     lbl_w = (abs_x + CONN_BOX_X + CONN_BOX_W) - lbl_x
                     self._cells.append(dict(
-                        id=self._new_id(),
+                        id=_cid("label"),
                         value=html.escape(builtin_spec["label"]),
                         style=(
                             "text;html=1;align=left;verticalAlign=middle;"
@@ -355,7 +463,7 @@ class DrawIOBuilder:
                 # Ultimate fallback: centred text label
                 label = (builtin_spec or {}).get("label") or component_name
                 self._cells.append(dict(
-                    id=self._new_id(),
+                    id=_cid("label"),
                     value=html.escape(label),
                     style=(
                         "text;html=1;align=center;verticalAlign=middle;"
@@ -374,11 +482,19 @@ class DrawIOBuilder:
         rect: Rect,
         svg_content: Optional[str] = None,
         builtin_spec: Optional[Dict[str, Any]] = None,
+        base_id: Optional[str] = None,
     ) -> None:
-        """Render an infrastructure component (Oracle, NAS, etc.) inside the APP frame."""
+        """Render an infrastructure component (Oracle, NAS, etc.) inside the APP frame.
+
+        base_id: meaningful prefix, e.g. "infra_oracle" → cells
+                 "infra_oracle_box", "infra_oracle_icon", "infra_oracle_label".
+        """
+        def _cid(suffix: str) -> str:
+            return f"{base_id}_{suffix}" if base_id else self._new_id()
+
         # Box
         self._cells.append(dict(
-            id=self._new_id(), value="",
+            id=_cid("box"), value="",
             style=(
                 f"rounded=1;whiteSpace=wrap;html=1;"
                 f"strokeColor={self.cs.frame_stroke};strokeWidth=1;fillColor=#1a1d23;"
@@ -394,7 +510,7 @@ class DrawIOBuilder:
         if svg_content:
             b64 = base64.b64encode(svg_content.encode("utf-8")).decode("ascii")
             self._cells.append(dict(
-                id=self._new_id(), value="",
+                id=_cid("icon"), value="",
                 style=(
                     f"shape=image;verticalLabelPosition=bottom;verticalAlign=top;"
                     f"aspect=fixed;imageAspect=0;image=data:image/svg+xml,{b64};"
@@ -404,14 +520,14 @@ class DrawIOBuilder:
             ))
         elif builtin_spec:
             self._cells.append(dict(
-                id=self._new_id(), value="",
+                id=_cid("icon"), value="",
                 style=builtin_spec["icon_style"],
                 vertex="1", parent="1",
                 x=ix, y=iy, w=builtin_spec["icon_w"], h=builtin_spec["icon_h"],
             ))
 
         self._cells.append(dict(
-            id=self._new_id(),
+            id=_cid("label"),
             value=html.escape(name),
             style=(
                 "text;html=1;align=left;verticalAlign=middle;"
@@ -420,6 +536,44 @@ class DrawIOBuilder:
             ),
             vertex="1", parent="1",
             x=ix + icon_w + 4, y=rect.y, w=rect.w - icon_w - 8, h=rect.h,
+        ))
+
+    # ------------------------------------------------------------------ TB connection arrow
+
+    def add_tb_connection_arrow(
+        self,
+        x_start: float,
+        x_end: float,
+        y_start: float,
+        y_end: float,
+        label: str,
+        base_id: str,
+    ) -> None:
+        """Fixed-geometry connection arrow for top-to-bottom (TB) layout.
+
+        Draws a straight line from (x_start, y_start) to (x_end, y_end) with
+        a block arrowhead at the target end.  The middleware name ``label`` is
+        shown as a small pill-shaped label at the midpoint of the arrow.
+
+        Unlike the LR connection-unit, there is no icon box — just the arrow
+        with an inline label.  This keeps TB diagrams compact.
+        """
+        stroke = self.cs.healthy_stroke
+        self._cells.append(dict(
+            id=f"{base_id}_arrow",
+            value=html.escape(label),
+            style=(
+                f"html=1;rounded=0;edgeStyle=none;"
+                f"strokeColor={stroke};strokeWidth=2;"
+                f"startArrow=none;startFill=0;"
+                f"endArrow=block;endFill=1;"
+                f"fontColor=#cccccc;fontSize=9;"
+                f"labelBackgroundColor=#1a1d23;"
+                f"labelBorderColor={stroke};"
+            ),
+            edge="1", parent="1",
+            source_point=(x_start, y_start),
+            target_point=(x_end, y_end),
         ))
 
     # ------------------------------------------------------------------ XML output
@@ -481,7 +635,7 @@ class DrawIOBuilder:
                     tx, ty = cell["target_point"]
                     ET.SubElement(geom, "mxPoint", x=str(tx), y=str(ty), **{"as": "targetPoint"})
 
-        return ET.tostring(root, encoding="unicode", xml_declaration=False)
+        return ET.tostring(root, encoding="unicode")
 
 
 # ---------------------------------------------------------------------------
@@ -563,94 +717,305 @@ def compose_flow_diagram(
     ]
 
     n_fns = len(knowledge.business_functions)
+    # Compute how much infra group box adds to the app frame height
+    if infra:
+        _icols = INFRA_COLS
+        _irows = (len(infra) + _icols - 1) // _icols
+        _igrid_h = _irows * INFRA_ITEM_H + max(0, _irows - 1) * INFRA_V_GAP
+        _igroup_h = _igrid_h + INFRA_GROUP_PAD * 2 + INFRA_GROUP_LABEL_H
+        infra_section_h = BLOCK_GAP + _igroup_h
+    else:
+        infra_section_h = 0
     app_inner = (
         20 + n_fns * BLOCK_H + max(0, n_fns - 1) * BLOCK_GAP
-        + (BLOCK_GAP + len(infra) * (BLOCK_H + BLOCK_GAP) if infra else 0)
+        + infra_section_h
     )
     app_h = max(app_inner + FRAME_PAD * 2, col_h(all_up), col_h(all_dn))
 
-    canvas_h = int(app_h + TOP + 80)
-    canvas_w = int(DOWNSTREAM_COL_X + UP_FRAME_W + 60)
+    app_slug = _slug(knowledge.app_name or "application")
 
-    # ---- draw upstream column ----
-    up_y = TOP
-    for name, members, mws in all_up:
-        gh = frame_h(len(members), len(mws))
-        if len(members) == 1 and name == members[0]:
-            builder.add_solid_block(members[0], Rect(UPSTREAM_COL_X, up_y, BLOCK_W, BLOCK_H))
-        else:
-            builder.add_frame(name, Rect(UPSTREAM_COL_X, up_y, UP_FRAME_W, gh))
-            iy = up_y + FRAME_PAD + 20
-            for m in members:
-                builder.add_solid_block(m, Rect(UPSTREAM_COL_X + FRAME_PAD, iy, BLOCK_W, BLOCK_H))
-                iy += BLOCK_H + BLOCK_GAP
-        up_y += gh + GROUP_GAP
+    # ---- auto-select layout direction (LR vs TB) ----
+    # LR (left-to-right): upstream | conn-units | APP | conn-units | downstream
+    # TB (top-to-bottom): upstream row ↓ conn-arrows ↓ APP ↓ conn-arrows ↓ downstream row
+    #
+    # Switch to TB when:
+    #   (a) either side has > LR_MAX_GROUPS groups — LR column becomes too tall, OR
+    #   (b) LR canvas width:height would exceed LR_ASPECT_LIMIT — diagram too wide
+    #       for the Z5-MAIN panel (≈ 5:3 aspect) without excessive letterboxing
+    _ltr_w = DOWNSTREAM_COL_X + UP_FRAME_W + 60
+    _ltr_h = TOP + app_h + 80
+    _ltr_aspect = _ltr_w / max(_ltr_h, 1.0)
+    use_tb = (_ltr_aspect > LR_ASPECT_LIMIT) or (max(len(all_up), len(all_dn)) > LR_MAX_GROUPS)
 
-    # ---- draw left connection units (one per middleware, stacked) ----
-    up_y = TOP
-    for name, members, mws in all_up:
-        gh = frame_h(len(members), len(mws))
-        total_conn_h = len(mws) * CONN_UNIT_H + max(0, len(mws) - 1) * CONN_UNIT_GAP
-        conn_start_y = up_y + (gh - total_conn_h) / 2
-        for i, mw in enumerate(mws):
-            cu_y = conn_start_y + i * (CONN_UNIT_H + CONN_UNIT_GAP)
-            builder.add_connection_unit(
-                abs_x=CONN_LEFT_X,
-                abs_y=cu_y,
-                component_name=mw,
-                svg_content=_find_svg(mw, component_svgs),
-                builtin_spec=_resolve_spec(mw),
+    # ---- shared helper: draw app-frame contents at a given (ax, ay) origin ----
+    def _draw_app_contents(ax: float, ay: float) -> None:
+        app_block_w = APP_FRAME_W - FRAME_PAD * 2
+        total_fn_h = n_fns * BLOCK_H + max(0, n_fns - 1) * BLOCK_GAP
+        fn_y = ay + max(FRAME_PAD + 20, (app_h - total_fn_h) / 2)
+        for fn in knowledge.business_functions:
+            builder.add_solid_block(
+                fn.name, Rect(ax + FRAME_PAD, fn_y, app_block_w, BLOCK_H),
+                cell_id=f"app_fn_{_slug(fn.name)}",
             )
-        up_y += gh + GROUP_GAP
+            fn_y += BLOCK_H + BLOCK_GAP
+        if infra:
+            cols = INFRA_COLS
+            rows = (len(infra) + cols - 1) // cols
+            grid_w = cols * INFRA_ITEM_W + (cols - 1) * INFRA_H_GAP
+            grid_h = rows * INFRA_ITEM_H + (rows - 1) * INFRA_V_GAP
+            group_w = grid_w + INFRA_GROUP_PAD * 2
+            group_h = grid_h + INFRA_GROUP_PAD * 2 + INFRA_GROUP_LABEL_H
+            infra_group_x = ax + (APP_FRAME_W - group_w) / 2
+            infra_group_y = fn_y + BLOCK_GAP
+            builder.add_frame(
+                "Infrastructure",
+                Rect(infra_group_x, infra_group_y, group_w, group_h),
+                cell_id=f"infra_group_{app_slug}",
+                dashed=True, stroke_width=2, font_size=10, bold=False,
+            )
+            for idx, mc in enumerate(infra):
+                col_i = idx % cols
+                row_i = idx // cols
+                ix = infra_group_x + INFRA_GROUP_PAD + col_i * (INFRA_ITEM_W + INFRA_H_GAP)
+                iy = (infra_group_y + INFRA_GROUP_LABEL_H + INFRA_GROUP_PAD
+                      + row_i * (INFRA_ITEM_H + INFRA_V_GAP))
+                builder.add_infra_icon(
+                    mc.name, Rect(ix, iy, INFRA_ITEM_W, INFRA_ITEM_H),
+                    svg_content=_find_svg(mc.name, component_svgs),
+                    builtin_spec=_resolve_spec(mc.name),
+                    base_id=f"infra_{_slug(mc.name)}",
+                )
 
-    # ---- draw app frame ----
-    builder.add_frame(knowledge.app_name or "Application", Rect(APP_COL_X, TOP, APP_FRAME_W, app_h))
-    app_block_w = APP_FRAME_W - FRAME_PAD * 2  # fill frame width
-    # Vertically centre the function blocks within the app frame
-    total_fn_h = n_fns * BLOCK_H + max(0, n_fns - 1) * BLOCK_GAP
-    fn_y = TOP + max(FRAME_PAD + 20, (app_h - total_fn_h) / 2)
-    for fn in knowledge.business_functions:
-        builder.add_solid_block(fn.name, Rect(APP_COL_X + FRAME_PAD, fn_y, app_block_w, BLOCK_H))
-        fn_y += BLOCK_H + BLOCK_GAP
-    infra_y = fn_y + BLOCK_GAP
-    for mc in infra:
-        builder.add_infra_icon(
-            mc.name,
-            Rect(APP_COL_X + FRAME_PAD, infra_y, CONN_BOX_W, BLOCK_H),
-            svg_content=_find_svg(mc.name, component_svgs),
-            builtin_spec=_resolve_spec(mc.name),
+    if use_tb:
+        # ============================================================
+        # TB layout: upstream row → APP (center) → downstream row
+        # Connection zones use simple labeled arrows (no icon boxes).
+        # Canvas is padded to Z5_PANEL_ASPECT (5:3) on the narrow axis.
+        # ============================================================
+
+        def _tb_gw(members: List[str]) -> float:
+            return float(UP_FRAME_W if len(members) > 1 else BLOCK_W)
+
+        def _tb_gh(n: int) -> float:
+            if n <= 1:
+                return float(BLOCK_H)
+            return float(FRAME_PAD * 2 + 20 + n * BLOCK_H + max(0, n - 1) * BLOCK_GAP)
+
+        up_gws = [_tb_gw(m) for _, m, _ in all_up]
+        dn_gws = [_tb_gw(m) for _, m, _ in all_dn]
+        up_ghs = [_tb_gh(len(m)) for _, m, _ in all_up]
+        dn_ghs = [_tb_gh(len(m)) for _, m, _ in all_dn]
+
+        max_up_h = max(up_ghs) if up_ghs else float(BLOCK_H)
+        max_dn_h = max(dn_ghs) if dn_ghs else float(BLOCK_H)
+
+        up_row_w = sum(up_gws) + max(0, len(all_up) - 1) * TB_H_GAP
+        dn_row_w = sum(dn_gws) + max(0, len(all_dn) - 1) * TB_H_GAP
+
+        content_w = max(up_row_w, float(APP_FRAME_W), dn_row_w) + 2 * TB_MARGIN
+        canvas_h = int(TB_MARGIN + max_up_h + TB_CONN_H + app_h + TB_CONN_H + max_dn_h + TB_MARGIN)
+        # Pad width to Z5-MAIN 5:3 aspect ratio to minimise lateral whitespace
+        canvas_w = max(int(content_w), int(canvas_h * Z5_PANEL_ASPECT))
+
+        app_x_tb = (canvas_w - APP_FRAME_W) / 2.0
+        app_y_tb = TB_MARGIN + max_up_h + TB_CONN_H
+        n_up = max(len(all_up), 1)
+        n_dn = max(len(all_dn), 1)
+
+        # ---- draw upstream groups ----
+        up_x = (canvas_w - up_row_w) / 2.0
+        for i, (name, members, mws) in enumerate(all_up):
+            gw = up_gws[i]
+            gh = up_ghs[i]
+            gy = TB_MARGIN + (max_up_h - gh) / 2.0
+            g_slug = _slug(name)
+            if len(members) == 1 and name == members[0]:
+                builder.add_solid_block(
+                    members[0],
+                    Rect(up_x + (gw - BLOCK_W) / 2, gy + (gh - BLOCK_H) / 2, BLOCK_W, BLOCK_H),
+                    cell_id=f"up_block_{g_slug}",
+                )
+            else:
+                builder.add_frame(
+                    name, Rect(up_x, gy, gw, gh),
+                    cell_id=f"up_frame_{g_slug}",
+                    dashed=True, stroke_width=2,
+                )
+                iy = gy + FRAME_PAD + 20
+                for m in members:
+                    builder.add_solid_block(
+                        m, Rect(up_x + FRAME_PAD, iy, BLOCK_W, BLOCK_H),
+                        cell_id=f"up_block_{g_slug}_{_slug(m)}",
+                    )
+                    iy += BLOCK_H + BLOCK_GAP
+            # Connection arrows from group bottom → proportional entry on app-frame top
+            group_cx = up_x + gw / 2.0
+            app_entry_x = app_x_tb + (i + 0.5) / n_up * APP_FRAME_W
+            for j, mw in enumerate(mws):
+                h_off = (j - (len(mws) - 1) / 2.0) * 12.0
+                builder.add_tb_connection_arrow(
+                    x_start=group_cx + h_off,
+                    x_end=app_entry_x + h_off,
+                    y_start=TB_MARGIN + max_up_h,
+                    y_end=app_y_tb,
+                    label=mw,
+                    base_id=f"cu_up_{g_slug}_{_slug(mw)}",
+                )
+            up_x += gw + TB_H_GAP
+
+        # ---- draw app frame ----
+        builder.add_frame(
+            knowledge.app_name or "Application",
+            Rect(app_x_tb, app_y_tb, APP_FRAME_W, app_h),
+            cell_id=f"app_frame_{app_slug}",
         )
-        infra_y += BLOCK_H + BLOCK_GAP
+        _draw_app_contents(app_x_tb, app_y_tb)
 
-    # ---- draw right connection units (one per middleware, stacked) ----
-    dn_y = TOP
-    for name, members, mws in all_dn:
-        gh = frame_h(len(members), len(mws))
-        total_conn_h = len(mws) * CONN_UNIT_H + max(0, len(mws) - 1) * CONN_UNIT_GAP
-        conn_start_y = dn_y + (gh - total_conn_h) / 2
-        for i, mw in enumerate(mws):
-            cu_y = conn_start_y + i * (CONN_UNIT_H + CONN_UNIT_GAP)
-            builder.add_connection_unit(
-                abs_x=CONN_RIGHT_X,
-                abs_y=cu_y,
-                component_name=mw,
-                svg_content=_find_svg(mw, component_svgs),
-                builtin_spec=_resolve_spec(mw),
-            )
-        dn_y += gh + GROUP_GAP
+        # ---- draw downstream groups ----
+        dn_row_y = app_y_tb + app_h + TB_CONN_H
+        dn_x = (canvas_w - dn_row_w) / 2.0
+        for i, (name, members, mws) in enumerate(all_dn):
+            gw = dn_gws[i]
+            gh = dn_ghs[i]
+            gy = dn_row_y + (max_dn_h - gh) / 2.0
+            g_slug = _slug(name)
+            if len(members) == 1 and name == members[0]:
+                builder.add_solid_block(
+                    members[0],
+                    Rect(dn_x + (gw - BLOCK_W) / 2, gy + (gh - BLOCK_H) / 2, BLOCK_W, BLOCK_H),
+                    cell_id=f"dn_block_{g_slug}",
+                )
+            else:
+                builder.add_frame(
+                    name, Rect(dn_x, gy, gw, gh),
+                    cell_id=f"dn_frame_{g_slug}",
+                    dashed=True, stroke_width=2,
+                )
+                iy = gy + FRAME_PAD + 20
+                for m in members:
+                    builder.add_solid_block(
+                        m, Rect(dn_x + FRAME_PAD, iy, BLOCK_W, BLOCK_H),
+                        cell_id=f"dn_block_{g_slug}_{_slug(m)}",
+                    )
+                    iy += BLOCK_H + BLOCK_GAP
+            # Connection arrows from app-frame bottom → proportional exit → group top
+            group_cx = dn_x + gw / 2.0
+            app_exit_x = app_x_tb + (i + 0.5) / n_dn * APP_FRAME_W
+            for j, mw in enumerate(mws):
+                h_off = (j - (len(mws) - 1) / 2.0) * 12.0
+                builder.add_tb_connection_arrow(
+                    x_start=app_exit_x + h_off,
+                    x_end=group_cx + h_off,
+                    y_start=app_y_tb + app_h,
+                    y_end=dn_row_y,
+                    label=mw,
+                    base_id=f"cu_dn_{g_slug}_{_slug(mw)}",
+                )
+            dn_x += gw + TB_H_GAP
 
-    # ---- draw downstream column ----
-    dn_y = TOP
-    for name, members, mws in all_dn:
-        gh = frame_h(len(members), len(mws))
-        if len(members) == 1 and name == members[0]:
-            builder.add_solid_block(members[0], Rect(DOWNSTREAM_COL_X, dn_y, BLOCK_W, BLOCK_H))
-        else:
-            builder.add_frame(name, Rect(DOWNSTREAM_COL_X, dn_y, UP_FRAME_W, gh))
-            iy = dn_y + FRAME_PAD + 20
-            for m in members:
-                builder.add_solid_block(m, Rect(DOWNSTREAM_COL_X + FRAME_PAD, iy, BLOCK_W, BLOCK_H))
-                iy += BLOCK_H + BLOCK_GAP
-        dn_y += gh + GROUP_GAP
+    else:
+        # ============================================================
+        # LR layout (left-to-right): the original column arrangement.
+        # Canvas height is padded to Z5_PANEL_ASPECT (5:3) so the SVG
+        # fills the Z5-MAIN panel without excessive bottom letterboxing.
+        # ============================================================
+        canvas_w = int(_ltr_w)
+        canvas_h = max(int(_ltr_h), int(canvas_w / Z5_PANEL_ASPECT))
 
-    return builder.build(canvas_w=canvas_w, canvas_h=canvas_h)
+        # ---- draw upstream column ----
+        up_y = TOP
+        for name, members, mws in all_up:
+            gh = frame_h(len(members), len(mws))
+            g_slug = _slug(name)
+            if len(members) == 1 and name == members[0]:
+                builder.add_solid_block(
+                    members[0], Rect(UPSTREAM_COL_X, up_y, BLOCK_W, BLOCK_H),
+                    cell_id=f"up_block_{g_slug}",
+                )
+            else:
+                builder.add_frame(
+                    name, Rect(UPSTREAM_COL_X, up_y, UP_FRAME_W, gh),
+                    cell_id=f"up_frame_{g_slug}",
+                    dashed=True, stroke_width=2,
+                )
+                iy = up_y + FRAME_PAD + 20
+                for m in members:
+                    builder.add_solid_block(
+                        m, Rect(UPSTREAM_COL_X + FRAME_PAD, iy, BLOCK_W, BLOCK_H),
+                        cell_id=f"up_block_{g_slug}_{_slug(m)}",
+                    )
+                    iy += BLOCK_H + BLOCK_GAP
+            up_y += gh + GROUP_GAP
+
+        # ---- draw left connection units (one per middleware, stacked) ----
+        up_y = TOP
+        for name, members, mws in all_up:
+            gh = frame_h(len(members), len(mws))
+            g_slug = _slug(name)
+            total_conn_h = len(mws) * CONN_UNIT_H + max(0, len(mws) - 1) * CONN_UNIT_GAP
+            conn_start_y = up_y + (gh - total_conn_h) / 2
+            for i, mw in enumerate(mws):
+                cu_y = conn_start_y + i * (CONN_UNIT_H + CONN_UNIT_GAP)
+                builder.add_connection_unit(
+                    abs_x=CONN_LEFT_X, abs_y=cu_y,
+                    component_name=mw,
+                    svg_content=_find_svg(mw, component_svgs),
+                    builtin_spec=_resolve_spec(mw),
+                    base_id=f"cu_up_{g_slug}_{_slug(mw)}",
+                )
+            up_y += gh + GROUP_GAP
+
+        # ---- draw app frame ----
+        builder.add_frame(
+            knowledge.app_name or "Application",
+            Rect(APP_COL_X, TOP, APP_FRAME_W, app_h),
+            cell_id=f"app_frame_{app_slug}",
+        )
+        _draw_app_contents(APP_COL_X, TOP)
+
+        # ---- draw right connection units (one per middleware, stacked) ----
+        dn_y = TOP
+        for name, members, mws in all_dn:
+            gh = frame_h(len(members), len(mws))
+            g_slug = _slug(name)
+            total_conn_h = len(mws) * CONN_UNIT_H + max(0, len(mws) - 1) * CONN_UNIT_GAP
+            conn_start_y = dn_y + (gh - total_conn_h) / 2
+            for i, mw in enumerate(mws):
+                cu_y = conn_start_y + i * (CONN_UNIT_H + CONN_UNIT_GAP)
+                builder.add_connection_unit(
+                    abs_x=CONN_RIGHT_X, abs_y=cu_y,
+                    component_name=mw,
+                    svg_content=_find_svg(mw, component_svgs),
+                    builtin_spec=_resolve_spec(mw),
+                    base_id=f"cu_dn_{g_slug}_{_slug(mw)}",
+                )
+            dn_y += gh + GROUP_GAP
+
+        # ---- draw downstream column ----
+        dn_y = TOP
+        for name, members, mws in all_dn:
+            gh = frame_h(len(members), len(mws))
+            g_slug = _slug(name)
+            if len(members) == 1 and name == members[0]:
+                builder.add_solid_block(
+                    members[0], Rect(DOWNSTREAM_COL_X, dn_y, BLOCK_W, BLOCK_H),
+                    cell_id=f"dn_block_{g_slug}",
+                )
+            else:
+                builder.add_frame(
+                    name, Rect(DOWNSTREAM_COL_X, dn_y, UP_FRAME_W, gh),
+                    cell_id=f"dn_frame_{g_slug}",
+                    dashed=True, stroke_width=2,
+                )
+                iy = dn_y + FRAME_PAD + 20
+                for m in members:
+                    builder.add_solid_block(
+                        m, Rect(DOWNSTREAM_COL_X + FRAME_PAD, iy, BLOCK_W, BLOCK_H),
+                        cell_id=f"dn_block_{g_slug}_{_slug(m)}",
+                    )
+                    iy += BLOCK_H + BLOCK_GAP
+            dn_y += gh + GROUP_GAP
+
+    xml = builder.build(canvas_w=canvas_w, canvas_h=canvas_h)
+    svg = _make_svg_wrapper(xml, canvas_w, canvas_h)
+    return DrawIOOutput(xml=xml, svg=svg, canvas_w=canvas_w, canvas_h=canvas_h)
