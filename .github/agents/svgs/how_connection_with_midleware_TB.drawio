@@ -1,0 +1,25 @@
+<mxfile host="65bd71144e">
+    <diagram id="Khq7-oMDjenxTpEo_1CY" name="Page-1">
+        <mxGraphModel dx="626" dy="753" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" background="#181B1F" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="11" style="edgeStyle=none;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;strokeColor=#73BF69;strokeWidth=2;endArrow=block;endFill=1;startArrow=block;startFill=1;" edge="1" parent="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <mxPoint x="254.5" y="230" as="sourcePoint"/>
+                        <mxPoint x="254.5" y="378" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="5" value="" style="rounded=1;whiteSpace=wrap;html=1;strokeColor=#73BF69;strokeWidth=2;fillColor=#111217;container=0;" parent="1" vertex="1">
+                    <mxGeometry x="210" y="280" width="89" height="38" as="geometry"/>
+                </mxCell>
+                <mxCell id="6" value="" style="outlineConnect=0;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;shape=mxgraph.aws3.queue;fillColor=light-dark(#0066CC,#835801);gradientColor=#00CCCC;" parent="1" vertex="1">
+                    <mxGeometry x="221" y="289" width="35" height="19" as="geometry"/>
+                </mxCell>
+                <mxCell id="7" value="MQ" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fillColor=none;fontColor=#FFFFFF;fontSize=16;fontFamily=Times New Roman;container=0;" parent="1" vertex="1">
+                    <mxGeometry x="255" y="284.5" width="44" height="29" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+</mxfile>

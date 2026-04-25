@@ -158,8 +158,16 @@ LR_MAX_GROUPS   = 4    # either side having more groups than this → use TB
 
 # Top-to-bottom layout constants
 TB_MARGIN  = 24   # outer margin on all four sides of the TB canvas
-TB_H_GAP   = 16   # horizontal gap between groups in the same TB row
-TB_CONN_H  = 52   # vertical space allocated to each connection zone (arrow + label)
+TB_H_GAP   = 16   # minimum horizontal gap between groups in the same TB row
+
+# TB connection unit dimensions — same icon box (89×38) as LR, oriented vertically
+# Derived from how_connection_with_midleware_TB.drawio:
+#   total vertical span = 148px  (source y=230 → target y=378)
+#   icon box top offset = 50px   (box y=280, source y=230 → offset = 50)
+#   same box: 89×38, fillColor=#111217, strokeColor=green
+TB_CONN_UNIT_H  = 148  # total vertical span of one TB connection unit
+TB_CONN_BOX_Y   = 50   # offset from top of TB_CONN_UNIT to top of icon box
+TB_CU_H_SPACING = 10   # horizontal gap between side-by-side TB connection units (same group)
 
 # ---------------------------------------------------------------------------
 # Built-in middleware component specs
@@ -538,7 +546,7 @@ class DrawIOBuilder:
             x=ix + icon_w + 4, y=rect.y, w=rect.w - icon_w - 8, h=rect.h,
         ))
 
-    # ------------------------------------------------------------------ TB connection arrow
+    # ------------------------------------------------------------------ TB connection arrow (deprecated helper, kept for compatibility)
 
     def add_tb_connection_arrow(
         self,
@@ -549,14 +557,8 @@ class DrawIOBuilder:
         label: str,
         base_id: str,
     ) -> None:
-        """Fixed-geometry connection arrow for top-to-bottom (TB) layout.
-
-        Draws a straight line from (x_start, y_start) to (x_end, y_end) with
-        a block arrowhead at the target end.  The middleware name ``label`` is
-        shown as a small pill-shaped label at the midpoint of the arrow.
-
-        Unlike the LR connection-unit, there is no icon box — just the arrow
-        with an inline label.  This keeps TB diagrams compact.
+        """Simple fixed-geometry vertical arrow with inline label.
+        Kept for compatibility. Use add_tb_connection_unit for production diagrams.
         """
         stroke = self.cs.healthy_stroke
         self._cells.append(dict(
@@ -575,6 +577,121 @@ class DrawIOBuilder:
             source_point=(x_start, y_start),
             target_point=(x_end, y_end),
         ))
+
+    # ------------------------------------------------------------------ TB connection unit (icon-box, same pattern as LR but vertical)
+
+    def add_tb_connection_unit(
+        self,
+        abs_x: float,
+        y_top: float,
+        y_bot: float,
+        component_name: str,
+        svg_content: Optional[str] = None,
+        builtin_spec: Optional[Dict[str, Any]] = None,
+        base_id: Optional[str] = None,
+    ) -> None:
+        """
+        Add a TB CONNECTION UNIT — the vertical equivalent of add_connection_unit.
+
+        Pattern (from how_connection_with_midleware_TB.drawio):
+          - One fixed-geometry vertical arrow spanning (abs_x, y_top) → (abs_x, y_bot)
+            exitX=0.5;exitY=1  (exits bottom-center of source)
+            entryX=0.5;entryY=0 (enters top-center of target)
+            Total span = TB_CONN_UNIT_H = 148px
+          - Same 89×38 rounded icon box as LR, centered horizontally on abs_x,
+            placed at y = y_top + TB_CONN_BOX_Y (= y_top + 50)
+          - Same icon/label content as LR connection unit
+
+        The arrow passes THROUGH the icon box (z-order: arrow first, then box on top).
+        abs_x  : horizontal center of this connection unit
+        y_top  : arrow source Y  (= bottom of upstream group)
+        y_bot  : arrow target Y  (= top of APP frame or downstream group)
+                 Must satisfy  y_bot - y_top == TB_CONN_UNIT_H  for correct proportions.
+        """
+        def _cid(suffix: str) -> str:
+            return f"{base_id}_{suffix}" if base_id else self._new_id()
+
+        stroke  = self.cs.healthy_stroke
+        box_x   = abs_x - CONN_BOX_W / 2
+        box_y   = y_top + TB_CONN_BOX_Y
+
+        # 1. Vertical fixed-geometry arrow — placed FIRST (behind icon box)
+        self._cells.append(dict(
+            id=_cid("arrow"), value="",
+            style=(
+                f"edgeStyle=none;html=1;"
+                f"exitX=0.5;exitY=1;exitDx=0;exitDy=0;"
+                f"entryX=0.5;entryY=0;entryDx=0;entryDy=0;"
+                f"strokeColor={stroke};strokeWidth=2;"
+                f"startArrow=block;startFill=1;"
+                f"endArrow=block;endFill=1;"
+            ),
+            edge="1", parent="1",
+            source_point=(abs_x, y_top),
+            target_point=(abs_x, y_bot),
+        ))
+
+        # 2. Icon box + content — same logic as LR add_connection_unit
+        if svg_content:
+            b64 = base64.b64encode(svg_content.encode("utf-8")).decode("ascii")
+            self._cells.append(dict(
+                id=_cid("svg"), value="",
+                style=(
+                    f"shape=image;html=1;aspect=fixed;imageAspect=0;"
+                    f"image=data:image/svg+xml,{b64};"
+                ),
+                vertex="1", connectable="0", parent="1",
+                x=box_x - 1, y=box_y - 1,
+                w=CONN_SVG_W, h=CONN_SVG_H,
+            ))
+        else:
+            self._cells.append(dict(
+                id=_cid("box"), value="",
+                style=(
+                    f"rounded=1;whiteSpace=wrap;html=1;"
+                    f"strokeColor={stroke};strokeWidth=2;fillColor=#111217;"
+                ),
+                vertex="1", connectable="0", parent="1",
+                x=box_x, y=box_y, w=CONN_BOX_W, h=CONN_UNIT_H,
+            ))
+            if builtin_spec and not builtin_spec.get("label_only"):
+                # Icon x/y relative to box_x/box_y (same offsets as LR)
+                icon_x = box_x + (builtin_spec["icon_x"] - CONN_BOX_X)
+                icon_y = box_y + builtin_spec["icon_y"]
+                self._cells.append(dict(
+                    id=_cid("icon"), value="",
+                    style=builtin_spec["icon_style"],
+                    vertex="1", connectable="0", parent="1",
+                    x=icon_x, y=icon_y,
+                    w=builtin_spec["icon_w"], h=builtin_spec["icon_h"],
+                ))
+                if builtin_spec.get("label"):
+                    lbl_x = icon_x + builtin_spec["icon_w"] + 2
+                    lbl_w = box_x + CONN_BOX_W - lbl_x
+                    self._cells.append(dict(
+                        id=_cid("label"),
+                        value=html.escape(builtin_spec["label"]),
+                        style=(
+                            "text;html=1;align=left;verticalAlign=middle;"
+                            "whiteSpace=wrap;rounded=0;fillColor=none;"
+                            "fontColor=#FFFFFF;fontSize=12;fontFamily=Times New Roman;"
+                        ),
+                        vertex="1", connectable="0", parent="1",
+                        x=lbl_x, y=box_y, w=lbl_w, h=CONN_UNIT_H,
+                    ))
+            else:
+                label = (builtin_spec or {}).get("label") or component_name
+                self._cells.append(dict(
+                    id=_cid("label"),
+                    value=html.escape(label),
+                    style=(
+                        "text;html=1;align=center;verticalAlign=middle;"
+                        "whiteSpace=wrap;rounded=0;fillColor=none;"
+                        "fontColor=#FFFFFF;fontSize=12;fontFamily=Times New Roman;"
+                    ),
+                    vertex="1", connectable="0", parent="1",
+                    x=box_x, y=box_y, w=CONN_BOX_W, h=CONN_UNIT_H,
+                ))
 
     # ------------------------------------------------------------------ XML output
 
@@ -646,7 +763,7 @@ def compose_flow_diagram(
     knowledge: AppKnowledge,
     color_scheme: ColorScheme,
     component_svgs: Dict[str, str],
-) -> str:
+) -> DrawIOOutput:
     """
     Build the complete flow diagram DrawIO XML.
 
@@ -788,9 +905,18 @@ def compose_flow_diagram(
 
     if use_tb:
         # ============================================================
-        # TB layout: upstream row → APP (center) → downstream row
-        # Connection zones use simple labeled arrows (no icon boxes).
-        # Canvas is padded to Z5_PANEL_ASPECT (5:3) on the narrow axis.
+        # TB layout: upstream row ↓ TB_CONN_UNIT ↓ APP ↓ TB_CONN_UNIT ↓ downstream row
+        #
+        # Connection zones use the SAME icon-box unit as LR, oriented vertically
+        # (from how_connection_with_midleware_TB.drawio):
+        #   - 148px tall vertical span
+        #   - Same 89×38 rounded box, same icon/label as LR
+        #   - Arrow passes through box (z-order: arrow first, box on top)
+        #   - Multiple middlewares per group: side-by-side horizontally
+        #
+        # Adaptive horizontal fill:
+        #   Both upstream and downstream rows are stretched to fill canvas_w
+        #   by increasing inter-group gaps proportionally.
         # ============================================================
 
         def _tb_gw(members: List[str]) -> float:
@@ -809,21 +935,43 @@ def compose_flow_diagram(
         max_up_h = max(up_ghs) if up_ghs else float(BLOCK_H)
         max_dn_h = max(dn_ghs) if dn_ghs else float(BLOCK_H)
 
-        up_row_w = sum(up_gws) + max(0, len(all_up) - 1) * TB_H_GAP
-        dn_row_w = sum(dn_gws) + max(0, len(all_dn) - 1) * TB_H_GAP
+        up_row_w_natural = sum(up_gws) + max(0, len(all_up) - 1) * TB_H_GAP
+        dn_row_w_natural = sum(dn_gws) + max(0, len(all_dn) - 1) * TB_H_GAP
 
-        content_w = max(up_row_w, float(APP_FRAME_W), dn_row_w) + 2 * TB_MARGIN
-        canvas_h = int(TB_MARGIN + max_up_h + TB_CONN_H + app_h + TB_CONN_H + max_dn_h + TB_MARGIN)
-        # Pad width to Z5-MAIN 5:3 aspect ratio to minimise lateral whitespace
+        content_w = max(up_row_w_natural, float(APP_FRAME_W), dn_row_w_natural) + 2 * TB_MARGIN
+        canvas_h = int(TB_MARGIN + max_up_h + TB_CONN_UNIT_H + app_h + TB_CONN_UNIT_H + max_dn_h + TB_MARGIN)
         canvas_w = max(int(content_w), int(canvas_h * Z5_PANEL_ASPECT))
 
+        # ---- adaptive horizontal gap: stretch each row to fill canvas_w ----
+        avail_w = float(canvas_w) - 2 * TB_MARGIN
+
+        def _row_gap(gws: List[float]) -> float:
+            n = len(gws)
+            if n <= 1:
+                return TB_H_GAP
+            natural = sum(gws)
+            gap = (avail_w - natural) / (n - 1)
+            return max(TB_H_GAP, gap)
+
+        up_gap = _row_gap(up_gws)
+        dn_gap = _row_gap(dn_gws)
+
+        # ---- starting x for each row (centred or left-aligned when gap>=TB_H_GAP) ----
+        def _row_start_x(gws: List[float], gap: float) -> float:
+            if not gws:
+                return float(TB_MARGIN)
+            total = sum(gws) + max(0, len(gws) - 1) * gap
+            if len(gws) == 1:
+                return (canvas_w - gws[0]) / 2.0
+            return float(TB_MARGIN)
+
         app_x_tb = (canvas_w - APP_FRAME_W) / 2.0
-        app_y_tb = TB_MARGIN + max_up_h + TB_CONN_H
+        app_y_tb = TB_MARGIN + max_up_h + TB_CONN_UNIT_H
         n_up = max(len(all_up), 1)
         n_dn = max(len(all_dn), 1)
 
-        # ---- draw upstream groups ----
-        up_x = (canvas_w - up_row_w) / 2.0
+        # ---- draw upstream groups + TB connection units ----
+        up_x = _row_start_x(up_gws, up_gap)
         for i, (name, members, mws) in enumerate(all_up):
             gw = up_gws[i]
             gh = up_ghs[i]
@@ -848,20 +996,25 @@ def compose_flow_diagram(
                         cell_id=f"up_block_{g_slug}_{_slug(m)}",
                     )
                     iy += BLOCK_H + BLOCK_GAP
-            # Connection arrows from group bottom → proportional entry on app-frame top
-            group_cx = up_x + gw / 2.0
+
+            # TB connection units: one per middleware, side-by-side horizontally
+            # Centred around the proportional entry point on the APP frame top edge
             app_entry_x = app_x_tb + (i + 0.5) / n_up * APP_FRAME_W
+            n_mws = len(mws)
+            total_cu_w = n_mws * CONN_BOX_W + max(0, n_mws - 1) * TB_CU_H_SPACING
+            cu_start_x = app_entry_x - total_cu_w / 2.0 + CONN_BOX_W / 2.0
             for j, mw in enumerate(mws):
-                h_off = (j - (len(mws) - 1) / 2.0) * 12.0
-                builder.add_tb_connection_arrow(
-                    x_start=group_cx + h_off,
-                    x_end=app_entry_x + h_off,
-                    y_start=TB_MARGIN + max_up_h,
-                    y_end=app_y_tb,
-                    label=mw,
+                cu_cx = cu_start_x + j * (CONN_BOX_W + TB_CU_H_SPACING)
+                builder.add_tb_connection_unit(
+                    abs_x=cu_cx,
+                    y_top=TB_MARGIN + max_up_h,
+                    y_bot=app_y_tb,
+                    component_name=mw,
+                    svg_content=_find_svg(mw, component_svgs),
+                    builtin_spec=_resolve_spec(mw),
                     base_id=f"cu_up_{g_slug}_{_slug(mw)}",
                 )
-            up_x += gw + TB_H_GAP
+            up_x += gw + up_gap
 
         # ---- draw app frame ----
         builder.add_frame(
@@ -871,9 +1024,10 @@ def compose_flow_diagram(
         )
         _draw_app_contents(app_x_tb, app_y_tb)
 
-        # ---- draw downstream groups ----
-        dn_row_y = app_y_tb + app_h + TB_CONN_H
-        dn_x = (canvas_w - dn_row_w) / 2.0
+        # ---- draw downstream groups + TB connection units ----
+        dn_conn_y_top = app_y_tb + app_h          # arrow source = app frame bottom
+        dn_row_y      = dn_conn_y_top + TB_CONN_UNIT_H  # downstream group top
+        dn_x = _row_start_x(dn_gws, dn_gap)
         for i, (name, members, mws) in enumerate(all_dn):
             gw = dn_gws[i]
             gh = dn_ghs[i]
@@ -898,32 +1052,55 @@ def compose_flow_diagram(
                         cell_id=f"dn_block_{g_slug}_{_slug(m)}",
                     )
                     iy += BLOCK_H + BLOCK_GAP
-            # Connection arrows from app-frame bottom → proportional exit → group top
-            group_cx = dn_x + gw / 2.0
+
+            # TB connection units from APP bottom → downstream group top
             app_exit_x = app_x_tb + (i + 0.5) / n_dn * APP_FRAME_W
+            n_mws = len(mws)
+            total_cu_w = n_mws * CONN_BOX_W + max(0, n_mws - 1) * TB_CU_H_SPACING
+            cu_start_x = app_exit_x - total_cu_w / 2.0 + CONN_BOX_W / 2.0
             for j, mw in enumerate(mws):
-                h_off = (j - (len(mws) - 1) / 2.0) * 12.0
-                builder.add_tb_connection_arrow(
-                    x_start=app_exit_x + h_off,
-                    x_end=group_cx + h_off,
-                    y_start=app_y_tb + app_h,
-                    y_end=dn_row_y,
-                    label=mw,
+                cu_cx = cu_start_x + j * (CONN_BOX_W + TB_CU_H_SPACING)
+                builder.add_tb_connection_unit(
+                    abs_x=cu_cx,
+                    y_top=dn_conn_y_top,
+                    y_bot=dn_row_y,
+                    component_name=mw,
+                    svg_content=_find_svg(mw, component_svgs),
+                    builtin_spec=_resolve_spec(mw),
                     base_id=f"cu_dn_{g_slug}_{_slug(mw)}",
                 )
-            dn_x += gw + TB_H_GAP
+            dn_x += gw + dn_gap
 
     else:
         # ============================================================
         # LR layout (left-to-right): the original column arrangement.
-        # Canvas height is padded to Z5_PANEL_ASPECT (5:3) so the SVG
-        # fills the Z5-MAIN panel without excessive bottom letterboxing.
+        #
+        # Adaptive vertical fill:
+        #   Both upstream and downstream columns fill canvas height (= app_h)
+        #   by increasing inter-group gaps proportionally. When one side has
+        #   fewer groups, its gaps are larger so both columns are the same height.
+        #   Single-group columns are vertically centred.
         # ============================================================
         canvas_w = int(_ltr_w)
         canvas_h = max(int(_ltr_h), int(canvas_w / Z5_PANEL_ASPECT))
 
+        # ---- adaptive vertical gap helpers ----
+        def _col_start_and_gap(groups: List[Tuple[str, List[str], List[str]]], target_h: float):
+            """Returns (start_y, gap) so groups fill target_h from start_y."""
+            n = len(groups)
+            if n == 0:
+                return TOP, GROUP_GAP
+            natural_h = sum(frame_h(len(m), len(mws)) for _, m, mws in groups)
+            if n == 1:
+                return TOP + (target_h - natural_h) / 2.0, GROUP_GAP
+            gap = (target_h - natural_h) / (n - 1)
+            return TOP, max(GROUP_GAP, gap)
+
+        up_start_y, up_gap = _col_start_and_gap(all_up, app_h)
+        dn_start_y, dn_gap = _col_start_and_gap(all_dn, app_h)
+
         # ---- draw upstream column ----
-        up_y = TOP
+        up_y = up_start_y
         for name, members, mws in all_up:
             gh = frame_h(len(members), len(mws))
             g_slug = _slug(name)
@@ -945,10 +1122,10 @@ def compose_flow_diagram(
                         cell_id=f"up_block_{g_slug}_{_slug(m)}",
                     )
                     iy += BLOCK_H + BLOCK_GAP
-            up_y += gh + GROUP_GAP
+            up_y += gh + up_gap
 
         # ---- draw left connection units (one per middleware, stacked) ----
-        up_y = TOP
+        up_y = up_start_y
         for name, members, mws in all_up:
             gh = frame_h(len(members), len(mws))
             g_slug = _slug(name)
@@ -963,7 +1140,7 @@ def compose_flow_diagram(
                     builtin_spec=_resolve_spec(mw),
                     base_id=f"cu_up_{g_slug}_{_slug(mw)}",
                 )
-            up_y += gh + GROUP_GAP
+            up_y += gh + up_gap
 
         # ---- draw app frame ----
         builder.add_frame(
@@ -974,7 +1151,7 @@ def compose_flow_diagram(
         _draw_app_contents(APP_COL_X, TOP)
 
         # ---- draw right connection units (one per middleware, stacked) ----
-        dn_y = TOP
+        dn_y = dn_start_y
         for name, members, mws in all_dn:
             gh = frame_h(len(members), len(mws))
             g_slug = _slug(name)
@@ -989,10 +1166,10 @@ def compose_flow_diagram(
                     builtin_spec=_resolve_spec(mw),
                     base_id=f"cu_dn_{g_slug}_{_slug(mw)}",
                 )
-            dn_y += gh + GROUP_GAP
+            dn_y += gh + dn_gap
 
         # ---- draw downstream column ----
-        dn_y = TOP
+        dn_y = dn_start_y
         for name, members, mws in all_dn:
             gh = frame_h(len(members), len(mws))
             g_slug = _slug(name)
@@ -1014,7 +1191,7 @@ def compose_flow_diagram(
                         cell_id=f"dn_block_{g_slug}_{_slug(m)}",
                     )
                     iy += BLOCK_H + BLOCK_GAP
-            dn_y += gh + GROUP_GAP
+            dn_y += gh + dn_gap
 
     xml = builder.build(canvas_w=canvas_w, canvas_h=canvas_h)
     svg = _make_svg_wrapper(xml, canvas_w, canvas_h)

@@ -9,8 +9,8 @@
 
 | Slot | x | y | h | w | Function | Source | Modifiable? |
 |------|---|---|---|---|----------|--------|-------------|
-| Z1-A | 0 | 0 | 3 | 20 | Main title panel | Bundled `.github/agents/panel_templates/title_panel.json` | Only: replace `"XXXX"` in title string |
-| Z1-B | 21 | 0 | 3 | 3 | Alert management panel | Bundled `.github/agents/panel_templates/alert_panel.json` | **NO changes whatsoever** |
+| Z1-A | 0 | 0 | 3 | 20 | Main title panel | User-provided `.github/agents/panel_templates/title_panel.json` | Only: replace `"XXXX"` in title string |
+| Z1-B | 21 | 0 | 3 | 3 | Alert management panel | User-provided `.github/agents/panel_templates/alert_panel.json` | **NO changes whatsoever** |
 | Z2-1 | 0 | 3 | 1 | 6 | BM1 section header | RCA top-3 analysis | `title=""`, set `alias` only |
 | Z2-2 | 6 | 3 | 1 | 6 | BM2 section header | RCA top-3 analysis | `title=""`, set `alias` only |
 | Z2-3 | 12 | 3 | 1 | 6 | BM3 section header | RCA top-3 analysis | `title=""`, set `alias` only |
@@ -38,11 +38,12 @@
 ### Zone 1 — Title Row
 Two user-provided panels locked to top of dashboard.
 
-- **Z1-A** (wide, 20 wide): Main title panel. Loaded from bundled `title_panel.json`; always available.  
+- **Z1-A** (wide, 20 wide): Main title panel. The agent receives this as `title_panel_json`.  
   - The ONLY permitted modification: find the string `"XXXX"` anywhere in the panel's `title` field and replace it with `app_knowledge.app_name`.  
-  - `title_panel_json` is never `None` when the bundled file is present.
-- **Z1-B** (narrow, 3 wide): Alert panel. Loaded from bundled `alert_panel.json`; always available.  
-  - Deep-copy only. Zero modifications to any field.
+  - If `title_panel_json` is `None`, raise `ValueError("title_panel.json is required")`.
+- **Z1-B** (narrow, 3 wide): Alert panel. The agent receives this as `alert_panel_json`.  
+  - Deep-copy only. Zero modifications to any field.  
+  - If `alert_panel_json` is `None`, raise `ValueError("alert_panel.json is required")`.
 
 ---
 
@@ -143,8 +144,8 @@ These files MUST exist before the dashboard build step:
 
 | File | Purpose |
 |------|---------|
-| `.github/agents/panel_templates/title_panel.json` | Z1-A source JSON — **bundled**, extracted from `standar.json` |
-| `.github/agents/panel_templates/alert_panel.json` | Z1-B source JSON — **bundled**, extracted from `standar.json` |
+| `.github/agents/panel_templates/title_panel.json` | Z1-A source JSON — **user-provided**, export from Grafana |
+| `.github/agents/panel_templates/alert_panel.json` | Z1-B source JSON — **user-provided**, export from Grafana |
 
 If either file is missing, the agent MUST stop and ask the user to provide it. Do NOT proceed with a synthesized panel.
 
@@ -153,11 +154,11 @@ If either file is missing, the agent MUST stop and ask the user to provide it. D
 ## Validation Rules (automated gate)
 
 1. `len(panels) == 21` — always.
-2. `panels[0]["gridPos"] == {"h":3,"w":21,"x":0,"y":0}` (Z1-A).
+2. `panels[0]["gridPos"] == {"h":3,"w":20,"x":0,"y":0}` (Z1-A).
 3. `panels[1]["gridPos"] == {"h":3,"w":3,"x":21,"y":0}` (Z1-B).
 4. Z1-B panel must be a deep copy of `alert_panel_json` with NO field changes except `id`.
 5. Z2-1/2/3/4 panel `title` must be `""` (empty); display text lives in `targets[0].alias`.
 6. Z2-4 `targets[0].alias` == `"System Metrics"` (literal).
 7. Z5-MAIN type must be `"agenty-flowcharting-panel"`.
-7. All 21 panels have `gridPos` matching REQUIRED_LAYOUT exactly.
-8. No duplicate panel `id` values.
+8. All 21 panels have `gridPos` matching REQUIRED_LAYOUT exactly.
+9. No duplicate panel `id` values.

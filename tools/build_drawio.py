@@ -132,8 +132,9 @@ def load_component_svgs(user_svgs_dir: Optional[Path]) -> Dict[str, str]:
 #   so their SVG reference files must NOT be loaded as icons (they show the full
 #   box+arrow pattern, not a standalone icon).
 _REFERENCE_TEMPLATE_STEMS: frozenset = frozenset({
-    "connection",                     # pure arrow layout guide — NOT a component icon
-    "how_connection_with_midleware",  # combination layout guide — NOT a component icon
+    "connection",                       # pure arrow layout guide — NOT a component icon
+    "how_connection_with_midleware",    # LR combination layout guide — NOT a component icon
+    "how_connection_with_midleware_tb", # TB combination layout guide — NOT a component icon
     # All other SVGs (fileit, mq, rest_api, solace, ...) ARE component icons and must load.
 })
 

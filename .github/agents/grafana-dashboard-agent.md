@@ -396,7 +396,7 @@ Create `./output/knowledge.json` with this exact schema:
       "common_issues": ["Spike indicates upstream retry storm"]
     }
   ],
-  "shared_middleware_components": [
+  "middleware_components": [
     {"name": "Oracle", "component_type": "database", "svg_provided": false, "svg_content": null}
   ],
   "upstream_groups": {
@@ -441,7 +441,7 @@ grouped_dn = {m for members in k.get("downstream_groups", {}).values() for m in 
 missing_dn = all_dn_names - grouped_dn
 if missing_dn: errors.append(f"downstreams not in any downstream_group: {missing_dn}")
 valid_types = {"messaging", "database", "file_transfer", "cache", "secret"}
-for mc in k.get("shared_middleware_components", []):
+for mc in k.get("middleware_components", []):
     if mc.get("component_type") not in valid_types:
         errors.append(f"invalid component_type for {mc['name']}: {mc.get('component_type')}")
 if errors:
@@ -456,36 +456,178 @@ else:
 - ❌ Any error printed → fix `knowledge.json` to address every listed error, then re-run the validation script.
 - ❌ Do NOT proceed to Step 6 until the script exits 0 with no errors.
 
+---
+
+## DrawIO Visual Style Guide
+
+All visual elements in the generated flow diagram follow a strict style guide.  
+This section is for **reference and verification only** — the `drawio_builder.py` code produces these styles automatically.
+
+### Canvas & Background
+| Property | Value |
+|---|---|
+| Background color | `#181B1F` |
+| Aspect ratio | 5 : 3 (matches Z5-MAIN panel) |
+
+### Upstream / Downstream Member Nodes (solid blocks)
+Single-member groups and individual members inside multi-member groups.
+
+| Property | Value |
+|---|---|
+| Shape | Rectangle, `rounded=0` |
+| Fill color | `cs.healthy_fill` = `#00b050` |
+| Stroke color | `cs.healthy_stroke` = `#73BF69` |
+| Font color | `#FFFFFF` |
+| Size | 120 × 36 px |
+
+### Upstream / Downstream Group Frames
+Dashed outline that groups multiple member nodes.
+
+| Property | Value |
+|---|---|
+| Fill | none |
+| Stroke color | `#888888` |
+| Stroke width | 2 px |
+| Style | `dashed=1;dashPattern=8 4` |
+| Label | group name, top-aligned, white |
+
+### Application Frame
+Solid outline that wraps all APP business functions and infra.
+
+| Property | Value |
+|---|---|
+| Fill | none |
+| Stroke color | `cs.healthy_stroke` = `#73BF69` |
+| Stroke width | 1 px |
+| Style | solid (not dashed) |
+
+### Business Function Blocks (inside APP frame)
+Same style as member nodes.
+
+| Property | Value |
+|---|---|
+| Shape | Rectangle, `rounded=0` |
+| Fill | `#00b050` |
+| Stroke | `#73BF69` |
+| Font color | `#FFFFFF` |
+| Size | 120 × 36 px |
+
+### Infrastructure Group Box (inside APP frame)
+Same dashed style as upstream/downstream group frames.
+
+| Property | Value |
+|---|---|
+| Fill | none |
+| Stroke | `#888888`, dashed, 2 px |
+| Label | "Infrastructure", top-aligned, `fontSize=10` |
+
+### Infrastructure Items (inside infra group)
+Rounded boxes with icon + label.
+
+| Property | Value |
+|---|---|
+| Shape | `rounded=1` |
+| Fill | `#1a1d23` |
+| Stroke | `cs.healthy_stroke` = `#73BF69`, 1 px |
+| Size | 108 × 32 px |
+
+### LR Connection Unit (left-to-right layout)
+One unit per middleware, stacked vertically in the connection column.
+
+| Property | Value |
+|---|---|
+| Total width | 291 px |
+| Arrow direction | horizontal, `exitX=1;exitY=0.5` → `entryX≈-0.07;entryY=0.5` |
+| Arrow color | `cs.healthy_stroke`, 2 px, bidirectional block arrows |
+| Icon box | 89 × 38 px, `rounded=1`, `fillColor=#111217`, `strokeColor=cs.healthy_stroke`, 2 px |
+| Icon box X offset | 99 px from connection unit left edge |
+| Font color | `#FFFFFF`, `fontFamily=Times New Roman`, `fontSize=12` |
+
+### TB Connection Unit (top-to-bottom layout)
+LR unit rotated 90°. Same icon box, vertical arrow.  
+When a group has multiple middlewares: units are placed **side-by-side horizontally**, centred on the group's entry/exit point on the APP frame edge.
+
+| Property | Value |
+|---|---|
+| Total height | **148 px** |
+| Arrow direction | vertical, `exitX=0.5;exitY=1` (exits bottom-center of source) |
+| Arrow color | `cs.healthy_stroke`, 2 px, bidirectional block arrows |
+| Icon box | 89 × 38 px — **identical to LR box** |
+| Icon box Y offset | **50 px** from arrow source point |
+| Side-by-side gap | 10 px between consecutive units in same group |
+| Font color | `#FFFFFF`, `fontFamily=Times New Roman`, `fontSize=12` |
+
+### Adaptive Fill Rules
+The diagram always fills the full Z5-MAIN panel canvas (no large whitespace bands).
+
+**LR mode**: Both upstream and downstream columns are stretched to the same height as the tallest column (= `app_h`) by distributing extra vertical space as larger inter-group gaps.  
+Formula: `gap = (app_h − sum_of_frame_heights) / (n_groups − 1)`, minimum `GROUP_GAP=20`.  
+If only 1 group: the single group is vertically centred in `app_h`.
+
+**TB mode**: Both upstream and downstream rows are stretched to fill `canvas_w − 2×TB_MARGIN` by distributing extra horizontal space as larger inter-group gaps.  
+Formula: `gap = (avail_w − sum_of_group_widths) / (n_groups − 1)`, minimum `TB_H_GAP=16`.  
+If only 1 group: the single group is horizontally centred.
+
+### Gate 6-B Style Validation Checks
+When reviewing the generated `.drawio` file, verify:
+- `fillColor=#111217` present in all connection unit boxes
+- `strokeColor=#73BF69` or `strokeColor=#00b050` on connection arrows and boxes
+- LR arrows have `exitX=` in style; TB arrows have `exitX=0.5;exitY=1`
+- No plain inline-label arrows used for connection zones (style must contain `edgeStyle=none` + `strokeWidth=2`)
+
+---
+
 ### Step 6 — Build the flow diagram
 
 ```bash
 python tools/build_drawio.py \
   --knowledge output/knowledge.json \
   --example   .github/agents/grafana_json_standar/standar.json \
-  --output    output/APPNAME_flow.xml \
+  --output    output/APPNAME_flow.drawio \
   --svgs      svgs/
 ```
 
 (Omit `--svgs` if no icons were provided.)
 
+> `build_drawio.py` always writes **two files** regardless of the suffix given to `--output`:
+> - `output/APPNAME_flow.drawio` — the editable mxGraphModel XML source (open in DrawIO desktop to inspect/edit)
+> - `output/APPNAME_flow.svg` — the DrawIO SVG wrapper; this is the file embedded in the Grafana Z5-MAIN panel
+
 **Validation Gate — Step 6-A (structural):**
 
-After the command completes, validate the output XML:
+After the command completes, validate both output files:
 
 ```python
 import os, sys
-xml_path = "output/APPNAME_flow.xml"  # ← use actual output path
+app_name = "APPNAME"  # ← replace with actual app name (lowercase, underscored)
+drawio_path = f"output/{app_name}_flow.drawio"
+svg_path    = f"output/{app_name}_flow.svg"
 errors = []
-if not os.path.exists(xml_path):
-    errors.append(f"Output file not found: {xml_path}")
+
+# Check .drawio XML source
+if not os.path.exists(drawio_path):
+    errors.append(f".drawio file not found: {drawio_path}")
 else:
-    content = open(xml_path, encoding="utf-8").read()
-    if len(content) < 200:
-        errors.append("XML file is too small — likely empty or generation failed")
-    if "<mxGraphModel" not in content:
-        errors.append("Missing <mxGraphModel> — file is not valid DrawIO XML")
-    if "<mxCell" not in content:
-        errors.append("No cells found in DrawIO XML")
+    xml_content = open(drawio_path, encoding="utf-8").read()
+    if len(xml_content) < 200:
+        errors.append(".drawio file too small — likely empty or generation failed")
+    if "<mxGraphModel" not in xml_content:
+        errors.append("Missing <mxGraphModel> — not valid DrawIO XML")
+    if "<mxCell" not in xml_content:
+        errors.append("No mxCell elements found in .drawio file")
+
+# Check .svg wrapper
+if not os.path.exists(svg_path):
+    errors.append(f".svg file not found: {svg_path}")
+else:
+    svg_content = open(svg_path, encoding="utf-8").read()
+    if len(svg_content) < 200:
+        errors.append(".svg file too small — likely empty")
+    if "<svg" not in svg_content:
+        errors.append(".svg file does not contain an <svg> element")
+    if "mxGraphModel" not in svg_content:
+        errors.append(".svg wrapper is missing embedded mxGraphModel (Grafana cannot read it)")
+
 if errors:
     print("VALIDATION FAILED:")
     for e in errors: print(f"  - {e}")
@@ -498,8 +640,9 @@ else:
 
 ```python
 import re, sys
-xml_path = "output/APPNAME_flow.xml"
-content = open(xml_path, encoding="utf-8").read()
+# Gate 6-B reads the .drawio XML source (not the .svg wrapper) — it contains the raw cell styles
+app_name = "APPNAME"  # ← replace with actual app name
+content = open(f"output/{app_name}_flow.drawio", encoding="utf-8").read()
 errors = []
 
 # 1. Logical grouping frames (upstream groups, downstream groups) must be dashed gray
@@ -526,7 +669,7 @@ for s in infra_group_styles:
 # 4. Connection arrows must use exitX/entryX (LR) OR edgeStyle=none (TB labeled arrows)
 arrow_styles = re.findall(r'id="[^"]*_arrow"[^>]*style="([^"]*)"', content)
 for s in arrow_styles:
-    # LR connection-unit arrows use exitX/entryX; TB arrows use edgeStyle=none — both valid
+    # LR arrows: exitX=1;exitY=0.5  |  TB arrows: exitX=0.5;exitY=1  |  both also have edgeStyle=none
     if "exitX=" not in s and "edgeStyle=none" not in s:
         errors.append(f"Connection arrow missing exitX/entryX or edgeStyle=none: {s[:80]}")
 
@@ -557,8 +700,8 @@ else:
 | Infra group box | `dashed=1; dashPattern=8 4; strokeColor=#888888; strokeWidth=2; fillColor=none` |
 | App frame (main app box) | Solid, `strokeColor` = color scheme green, no dashed |
 | Infra item boxes | Rounded, `fillColor=#1a1d23`, `strokeColor` = color scheme green |
-| LR connection arrows | `exitX=1;exitY=0.5;entryX=0;entryY=0.5;strokeWidth=2` — full icon-box unit |
-| TB connection arrows | `edgeStyle=none;strokeWidth=2` — straight labeled arrow, no icon box |
+| LR connection arrows | `edgeStyle=none;exitX=1;exitY=0.5;strokeWidth=2` — full icon-box unit (arrow + 89×38 box + icon/label) |
+| TB connection arrows | `edgeStyle=none;exitX=0.5;exitY=1;strokeWidth=2` — **same icon-box unit as LR**, oriented vertically (148px span) |
 | Infra layout | 2 columns per row (`INFRA_COLS=2`), grid inside group box |
 
 **Layout direction auto-selection rules (MANDATORY):**
@@ -572,10 +715,11 @@ else:
 | Otherwise | **LR** (left-to-right, original) |
 
 - **LR (left-to-right)**: `[Upstream col] ←→ [291px conn-unit] ←→ [APP frame] ←→ [291px conn-unit] ←→ [Downstream col]`
-  Connection zone = full graphical icon-box unit (arrow + middleware icon + label).
-- **TB (top-to-bottom)**: `[Upstream row]` ↕ straight labeled arrows ↕ `[APP frame]` ↕ straight labeled arrows ↕ `[Downstream row]`
-  Connection zone = simple straight arrow with `labelBackgroundColor=#1a1d23` inline label.
-  Upstream/downstream groups are spread horizontally. Arrow entry/exit points are distributed proportionally across the app frame top/bottom edge.
+  Connection zone = full graphical icon-box unit (arrow + 89×38 box + middleware icon + label).
+- **TB (top-to-bottom)**: `[Upstream row]` ↕ `[148px conn-unit]` ↕ `[APP frame]` ↕ `[148px conn-unit]` ↕ `[Downstream row]`
+  Connection zone = **same icon-box unit as LR** (same 89×38 box, same icon/label), oriented vertically with `exitX=0.5;exitY=1`.
+  When a group has multiple middlewares: units are placed side-by-side horizontally, centred on the group's entry/exit point on the APP frame edge.
+  Upstream/downstream rows are spread horizontally with adaptive gap fill to cover the full canvas width.
 
 **Canvas size target (Z5-MAIN panel fit):**
 
@@ -594,19 +738,33 @@ The Z5-MAIN panel is `h=18, w=18` Grafana grid units. At standard Grafana scale 
 
 ### Step 7 — Build the dashboard JSON
 
+> **Pre-Step 7 mandatory check — do this BEFORE running the command:**
+>
+> Verify both files exist:
+> - `.github/agents/panel_templates/title_panel.json` — Z1-A: main title + flowchart panel
+> - `.github/agents/panel_templates/alert_panel.json` — Z1-B: alert management panel
+>
+> If either file is missing, **STOP**. Ask the user:
+> > "I need two panel JSON files from your Grafana environment before building the dashboard:
+> > - `title_panel.json` — export the Z1-A title panel from Grafana (Dashboard → Panel → More → Export)
+> > - `alert_panel.json` — export the Z1-B alert panel the same way
+> > Place both files in `.github/agents/panel_templates/` and let me know when ready."
+>
+> Only proceed once both files are confirmed present.
+
 ```bash
 python tools/build_dashboard.py \
   --knowledge   output/knowledge.json \
   --example     .github/agents/grafana_json_standar/standar.json \
-  --flow-xml    output/APPNAME_flow.xml \
+  --flow-svg    output/APPNAME_flow.svg \
   --output      output/ \
   --title-panel .github/agents/panel_templates/title_panel.json \
   --alert-panel .github/agents/panel_templates/alert_panel.json \
   --rca-analysis output/rca_analysis.json
 ```
 
-> **Panel templates are bundled in the repo** — both files always exist at the paths above and are loaded automatically. No user action required.
-> If the user wants to use custom production panels, they can replace the files at `.github/agents/panel_templates/` before running this step.
+> `--flow-svg` takes the `.svg` wrapper file (not the `.drawio` XML).
+> The SVG content is embedded verbatim into the Z5-MAIN panel's `flowcharting.svg` field — this is what Grafana's FlowCharting plugin renders as the architecture diagram.
 
 **Read `.github/agents/dashboard_panel_reference.md` before mapping any panel content.**
 
@@ -812,7 +970,7 @@ Strict left-to-right column order:
 |---|---|---|
 | Solid filled block | Filled rectangle with border | Individual upstream, downstream, business function |
 | Outline frame | Dashed/thin-border rectangle with label | Logical group (e.g. "Retail Channel", "Corporate Channel", downstream category) |
-| Middleware component node | Icon (SVG/PNG) + text label below | Solace, IBM MQ, FileIT, Oracle, NAS, Hazelcast, REST API, etc. |
+| Middleware component node | Icon + text label (label to the right of icon, both inside icon box) | Solace, IBM MQ, FileIT, Oracle, NAS, Hazelcast, REST API, etc. |
 | Arrow | Directed line | Connection between elements |
 
 ---
