@@ -9,8 +9,8 @@
 
 | Slot | x | y | h | w | Function | Source | Modifiable? |
 |------|---|---|---|---|----------|--------|-------------|
-| Z1-A | 0 | 0 | 3 | 21 | Main title + FlowChart panel | User-provided `title_panel.json` | Only: replace `"XXXX"` in title string |
-| Z1-B | 21 | 0 | 3 | 3 | Alert management panel | User-provided `alert_panel.json` | **NO changes whatsoever** |
+| Z1-A | 0 | 0 | 3 | 20 | Main title panel | Bundled `.github/agents/panel_templates/title_panel.json` | Only: replace `"XXXX"` in title string |
+| Z1-B | 21 | 0 | 3 | 3 | Alert management panel | Bundled `.github/agents/panel_templates/alert_panel.json` | **NO changes whatsoever** |
 | Z2-1 | 0 | 3 | 1 | 6 | BM1 section header | RCA top-3 analysis | `title=""`, set `alias` only |
 | Z2-2 | 6 | 3 | 1 | 6 | BM2 section header | RCA top-3 analysis | `title=""`, set `alias` only |
 | Z2-3 | 12 | 3 | 1 | 6 | BM3 section header | RCA top-3 analysis | `title=""`, set `alias` only |
@@ -38,12 +38,11 @@
 ### Zone 1 — Title Row
 Two user-provided panels locked to top of dashboard.
 
-- **Z1-A** (wide, 21 wide): Main title panel. The agent receives this as `title_panel_json`.  
+- **Z1-A** (wide, 20 wide): Main title panel. Loaded from bundled `title_panel.json`; always available.  
   - The ONLY permitted modification: find the string `"XXXX"` anywhere in the panel's `title` field and replace it with `app_knowledge.app_name`.  
-  - If `title_panel_json` is `None`, raise `ValueError("title_panel.json is required")`.
-- **Z1-B** (narrow, 3 wide): Alert panel. The agent receives this as `alert_panel_json`.  
-  - Deep-copy only. Zero modifications to any field.  
-  - If `alert_panel_json` is `None`, raise `ValueError("alert_panel.json is required")`.
+  - `title_panel_json` is never `None` when the bundled file is present.
+- **Z1-B** (narrow, 3 wide): Alert panel. Loaded from bundled `alert_panel.json`; always available.  
+  - Deep-copy only. Zero modifications to any field.
 
 ---
 
@@ -144,8 +143,8 @@ These files MUST exist before the dashboard build step:
 
 | File | Purpose |
 |------|---------|
-| `.github/agents/panel_templates/title_panel.json` | Z1-A source JSON |
-| `.github/agents/panel_templates/alert_panel.json` | Z1-B source JSON |
+| `.github/agents/panel_templates/title_panel.json` | Z1-A source JSON — **bundled**, extracted from `standar.json` |
+| `.github/agents/panel_templates/alert_panel.json` | Z1-B source JSON — **bundled**, extracted from `standar.json` |
 
 If either file is missing, the agent MUST stop and ask the user to provide it. Do NOT proceed with a synthesized panel.
 

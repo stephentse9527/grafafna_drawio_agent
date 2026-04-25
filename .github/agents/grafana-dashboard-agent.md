@@ -605,11 +605,8 @@ python tools/build_dashboard.py \
   --rca-analysis output/rca_analysis.json
 ```
 
-> **Before running Step 7**, check whether the optional panel template files exist:
-> - `.github/agents/panel_templates/title_panel.json` — if present, used for Z1-A; if absent, Z1-A is taken directly from `standar.json` (no user action required).
-> - `.github/agents/panel_templates/alert_panel.json` — if present, used for Z1-B; if absent, Z1-B is taken directly from `standar.json` (no user action required).
->
-> These files are **optional**. Do NOT stop if they are missing — omit the `--title-panel` / `--alert-panel` flags from the command and proceed.
+> **Panel templates are bundled in the repo** — both files always exist at the paths above and are loaded automatically. No user action required.
+> If the user wants to use custom production panels, they can replace the files at `.github/agents/panel_templates/` before running this step.
 
 **Read `.github/agents/dashboard_panel_reference.md` before mapping any panel content.**
 

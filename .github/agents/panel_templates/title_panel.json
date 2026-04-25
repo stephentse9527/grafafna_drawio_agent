@@ -1,0 +1,97 @@
+{
+  "datasource": {
+    "type": "prometheus",
+    "uid": "df6zl48qvr01se"
+  },
+  "fieldConfig": {
+    "defaults": {
+      "color": {
+        "mode": "palette-classic"
+      },
+      "custom": {
+        "axisBorderShow": false,
+        "axisCenteredZero": false,
+        "axisColorMode": "text",
+        "axisLabel": "",
+        "axisPlacement": "auto",
+        "barAlignment": 0,
+        "barWidthFactor": 0.6,
+        "drawStyle": "line",
+        "fillOpacity": 0,
+        "gradientMode": "none",
+        "hideFrom": {
+          "legend": false,
+          "tooltip": false,
+          "viz": false
+        },
+        "insertNulls": false,
+        "lineInterpolation": "linear",
+        "lineWidth": 1,
+        "pointSize": 5,
+        "scaleDistribution": {
+          "type": "linear"
+        },
+        "showPoints": "auto",
+        "showValues": false,
+        "spanNulls": false,
+        "stacking": {
+          "group": "A",
+          "mode": "none"
+        },
+        "thresholdsStyle": {
+          "mode": "off"
+        }
+      },
+      "mappings": [],
+      "thresholds": {
+        "mode": "absolute",
+        "steps": [
+          {
+            "color": "#6c776a66",
+            "value": 0
+          }
+        ]
+      }
+    },
+    "overrides": []
+  },
+  "gridPos": {
+    "h": 3,
+    "w": 20,
+    "x": 0,
+    "y": 0
+  },
+  "id": 2,
+  "options": {
+    "legend": {
+      "calcs": [],
+      "displayMode": "list",
+      "placement": "bottom",
+      "showLegend": true
+    },
+    "tooltip": {
+      "hideZeros": false,
+      "mode": "single",
+      "sort": "none"
+    }
+  },
+  "pluginVersion": "12.3.0",
+  "targets": [
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "df6zl48qvr01se"
+      },
+      "editorMode": "code",
+      "expr": "sum(rate(prometheus_http_response_size_bytes_count{ }[$__rate_interval]))",
+      "fromExploreMetrics": true,
+      "instant": true,
+      "interval": "",
+      "legendFormat": "sum(rate)",
+      "range": true,
+      "refId": "prometheus_http_response_size_bytes_count-sum(rate)"
+    }
+  ],
+  "title": "New Panel",
+  "type": "timeseries"
+}

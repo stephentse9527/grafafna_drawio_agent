@@ -61,10 +61,12 @@ def main() -> None:
                         help="Path to the DrawIO XML file")
     parser.add_argument("--output", default="./output",
                         help="Output directory (default: ./output)")
-    parser.add_argument("--title-panel", default=None,
-                        help="Path to user-provided Z1-A title panel JSON")
-    parser.add_argument("--alert-panel", default=None,
-                        help="Path to user-provided Z1-B alert panel JSON")
+    parser.add_argument("--title-panel",
+                        default=".github/agents/panel_templates/title_panel.json",
+                        help="Path to Z1-A title panel JSON (default: bundled template)")
+    parser.add_argument("--alert-panel",
+                        default=".github/agents/panel_templates/alert_panel.json",
+                        help="Path to Z1-B alert panel JSON (default: bundled template)")
     parser.add_argument("--rca-analysis", default=None,
                         help="Path to rca_analysis.json (top business metrics + system metrics)")
     args = parser.parse_args()
