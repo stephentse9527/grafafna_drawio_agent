@@ -911,23 +911,99 @@ The Z5-MAIN panel is `h=18, w=18` Grafana grid units. At standard Grafana scale 
 - ✅ Script exits 0 and prints both `VALIDATION PASSED` messages.
 - ❌ Build command exits non-zero → print the full stderr and retry after fixing the root cause (usually a bad `knowledge.json` field — go back to Step 5 validation).
 - ❌ Either validation gate fails → re-run `build_drawio.py` after correcting the issue.
-- ❌ Do NOT proceed to Step 7 until both gates pass.
+- ❌ Do NOT proceed to Step 6-C until both gates pass.
+
+**Validation Gate — Step 6-C (visual inspection — MANDATORY):**
+
+Run the preview tool to generate a visual HTML render and structural layout report:
+
+```bash
+python tools/preview_flow.py output/APPNAME_flow.drawio
+```
+
+This tool:
+1. Parses the `.drawio` XML and renders all cells as SVG
+2. Prints a text layout report of every named cell with its `x`, `y`, `w`, `h`
+3. Detects out-of-bounds elements (anything outside the canvas dimensions)
+4. Writes `output/APPNAME_flow.preview.html`
+
+After running, **open the preview HTML** in a browser:
+```bash
+# In VS Code terminal:
+Start-Process output/APPNAME_flow.preview.html   # Windows
+# or use browser/openBrowserPage with the file:// URI
+```
+
+Use `read/viewImage` or `browser/openBrowserPage` with `file:///ABSOLUTE_PATH/output/APPNAME_flow.preview.html` to visually inspect the diagram.
+
+**Visual checklist (EVERY item must pass before proceeding to Step 7):**
+
+| # | Check | Pass condition |
+|---|-------|----------------|
+| 1 | All blocks visible | Every upstream, downstream, and business function block has a visible label |
+| 2 | APP frame | Present, labelled with the correct app name, solid green border |
+| 3 | Connection units | Each arrow is straight; icon box is centred on the arrow; icon box label is readable |
+| 4 | Block-arrow alignment | Each upstream/downstream block center-Y matches its connection unit arrow center-Y (visual alignment) |
+| 5 | Infra grid | Infrastructure items inside APP frame are in a neat 2-column grid with visible labels |
+| 6 | No clipping | No element is cut off at a canvas edge |
+| 7 | No overlap | No two labelled boxes overlap each other |
+| 8 | Balance | No large blank region on one side while the other side is crowded |
+
+**Failures and fixes:**
+- Script exits 1 with `OUT-OF-BOUNDS` errors → a constant in `drawio_builder.py` is wrong; open the file, identify the misplaced element from the layout report, and adjust its position constant.
+- Block-arrow misalignment → the vertical centring calculation is off; check `frame_h()` result matches actual slot height.
+- Items overlap → gap constants too small; increase `GROUP_GAP` or `CONN_UNIT_GAP`.
+- Large blank region → adaptive gap formula not working; review `_col_start_and_gap()` for LR or `_row_gap()` for TB.
+- After fixing any Python code, re-run `build_drawio.py`, re-run Gates 6-A/6-B/6-C from scratch.
+- ❌ Do NOT proceed to Step 7 until all 8 visual checklist items pass.
 
 ### Step 7 — Build the dashboard JSON
 
-> **Pre-Step 7 mandatory check — do this BEFORE running the command:**
->
-> Verify both files exist:
-> - `.github/agents/panel_templates/title_panel.json` — Z1-A: main title + flowchart panel
-> - `.github/agents/panel_templates/alert_panel.json` — Z1-B: alert management panel
->
-> If either file is missing, **STOP**. Ask the user:
-> > "I need two panel JSON files from your Grafana environment before building the dashboard:
-> > - `title_panel.json` — export the Z1-A title panel from Grafana (Dashboard → Panel → More → Export)
-> > - `alert_panel.json` — export the Z1-B alert panel the same way
-> > Place both files in `.github/agents/panel_templates/` and let me know when ready."
->
-> Only proceed once both files are confirmed present.
+**Validation Gate 7-PRE — mandatory BEFORE running build_dashboard.py:**
+
+Run this script first. It hard-fails if the required user panel files are missing.
+
+```python
+import sys
+from pathlib import Path
+
+title_panel = Path(".github/agents/panel_templates/title_panel.json")
+alert_panel = Path(".github/agents/panel_templates/alert_panel.json")
+
+errors = []
+
+if not title_panel.exists():
+    errors.append(
+        f"MISSING: {title_panel}\n"
+        "  Action: Ask the user to export the Z1-A title panel from Grafana —\n"
+        "  Dashboard → Panel → More → Export JSON → save as title_panel.json"
+    )
+elif title_panel.stat().st_size < 20:
+    errors.append(f"EMPTY or near-empty: {title_panel} ({title_panel.stat().st_size} bytes)")
+
+if not alert_panel.exists():
+    errors.append(
+        f"MISSING: {alert_panel}\n"
+        "  Action: Ask the user to export the Z1-B alert panel from Grafana —\n"
+        "  Dashboard → Panel → More → Export JSON → save as alert_panel.json"
+    )
+elif alert_panel.stat().st_size < 20:
+    errors.append(f"EMPTY or near-empty: {alert_panel} ({alert_panel.stat().st_size} bytes)")
+
+if errors:
+    print("GATE 7-PRE FAILED — cannot build dashboard without production panel files:")
+    for e in errors:
+        print(f"  ❌ {e}")
+    print()
+    print("Tell the user exactly what is needed (see Action items above).")
+    print("DO NOT run build_dashboard.py until these files are present. DO NOT use fallback/synthetic panels.")
+    sys.exit(1)
+else:
+    print("GATE 7-PRE PASSED — both panel template files are present.")
+```
+
+- ❌ Script exits 1 → **STOP**. Tell the user what is missing using the exact message from the script. Do NOT proceed. Do NOT generate a dashboard with synthetic placeholder panels.
+- ✅ Script exits 0 → proceed to run `build_dashboard.py`.
 
 ```bash
 python tools/build_dashboard.py \
@@ -1119,6 +1195,37 @@ else:
 - ❌ After 3 failed attempts → stop and report the exact list of errors to the user. Do NOT proceed to Step 8.
 
 **The grid is a hard contract. There is no tolerance for partial compliance.**
+
+### 7-C  Content Validity Validation (runs immediately after 7-B)
+
+Run the standalone validation script:
+
+```bash
+python tools/validate_dashboard.py output/APPNAME_dashboard.json
+```
+
+This script checks:
+- `[7-A]` Panel count and all gridPos slots
+- `[7-B]` All titles are non-empty English
+- `[7-C]` Z1-A title does **not** contain `[TITLE PANEL MISSING]` (i.e. the real user panel was used)
+- `[7-C]` Z1-B title does **not** contain `[ALERT PANEL MISSING]` (i.e. the real user panel was used)
+- `[7-C]` Z5-MAIN `flowcharting.svg` field exists, is ≥ 200 chars, and contains `mxGraphModel`
+
+```
+Expected output:
+  VALIDATION PASSED — APPNAME_dashboard.json
+    ✓ [7-A] 21 panels, all gridPos slots present
+    ✓ [7-B] All titles are non-empty English
+    ✓ [7-C] Z1-A and Z1-B are production panels (no synthetic placeholders)
+    ✓ [7-C] Z5-MAIN has a valid DrawIO SVG embedded
+```
+
+- ❌ `[7-C] Z1-A still has synthetic placeholder title` → `title_panel.json` was not used despite passing Gate 7-PRE. Re-check the file path and re-run `build_dashboard.py`.
+- ❌ `[7-C] Z1-B still has synthetic placeholder title` → Same fix for `alert_panel.json`.
+- ❌ `[7-C] Z5-MAIN flowcharting.svg is missing or too short` → The `--flow-svg` argument pointed to the wrong file. Use the `.svg` file (not the `.drawio` XML). Re-run `build_dashboard.py` with the correct path.
+- ❌ Any `[7-C]` failure → fix root cause and re-run. **Do NOT proceed to Step 8 with a failing dashboard.**
+
+**ALL THREE gates (7-PRE, 7-A/7-B, 7-C) must pass before Step 8.**
 
 ### Step 8 — Report results
 
