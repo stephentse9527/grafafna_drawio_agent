@@ -2,12 +2,7 @@
 name: Grafana Dashboard Agent
 description: Reads a Confluence knowledge base and generates a production Grafana dashboard JSON + DrawIO flow diagram for any application.
 tools:
-  - read_file
-  - create_file
-  - replace_string_in_file
-  - run_in_terminal
-  - file_search
-  - grep_search
+[vscode/getProjectSetupInfo, vscode/installExtension, vscode/memory, vscode/newWorkspace, vscode/resolveMemoryFileUri, vscode/runCommand, vscode/vscodeAPI, vscode/extensions, vscode/askQuestions, execute/runNotebookCell, execute/testFailure, execute/getTerminalOutput, execute/killTerminal, execute/sendToTerminal, execute/createAndRunTask, execute/runInTerminal, execute/runTests, read/getNotebookSummary, read/problems, read/readFile, read/viewImage, read/terminalSelection, read/terminalLastCommand, agent/runSubagent, edit/createDirectory, edit/createFile, edit/createJupyterNotebook, edit/editFiles, edit/editNotebook, edit/rename, search/changes, search/codebase, search/fileSearch, search/listDirectory, search/textSearch, search/usages, web/fetch, web/githubRepo, browser/openBrowserPage, vscode.mermaid-chat-features/renderMermaidDiagram, ms-python.python/getPythonEnvironmentInfo, ms-python.python/getPythonExecutableCommand, ms-python.python/installPythonPackage, ms-python.python/configurePythonEnvironment, ms-toolsai.jupyter/configureNotebook, ms-toolsai.jupyter/listNotebookPackages, ms-toolsai.jupyter/installNotebookPackages, todo]
 skills:
   - confluence_list_pages
   - confluence_read_page
@@ -56,31 +51,88 @@ Every step has a **Validation Gate**. This policy is mandatory and non-negotiabl
 
 ## Confluence Skill Reference
 
-All Confluence access is performed via **inline Python calls** executed with `run_in_terminal`. SSL certificate verification is **always disabled** (`verify=False`) because the internal Confluence server uses a self-signed certificate.
+### How to access Confluence — two methods, auto-fallback
 
-### Skill: `confluence_list_pages`
+**Method A — Direct HTTP (preferred when `.env` credentials are available):**
+All Confluence access is performed via **inline Python calls** executed with `run_in_terminal`.
+SSL certificate verification is **always disabled** (`verify=False`) because the internal Confluence server uses a self-signed certificate.
 
-Lists all pages in a Confluence space. Returns a JSON array of `{"id", "title"}` objects.
+**Method B — VS Code built-in Confluence tool (fallback when Method A returns 401/403):**
+Some corporate VS Code installations include a pre-authenticated Confluence tool (e.g. `mcp_confluence_*` or similar).
+If Method A fails with HTTP 401 or 403, immediately:
+1. **Check the available tool list** — look for any tool whose name contains `confluence` (case-insensitive).
+2. If a Confluence tool is found, **use it instead** for all subsequent page reads. Pass the page URL or page ID directly; the tool handles authentication itself.
+3. If no Confluence tool is found, stop and report the 401/403 error to the user; ask them to verify `.env` credentials.
+
+> **Decision rule:** If the first `confluence_list_pages_by_url` attempt returns HTTP 401/403 → switch to VS Code Confluence tool for all remaining calls. Do not retry Method A.
+
+---
+
+### Skill: `confluence_list_pages_by_url`
+
+Given a Confluence **parent page URL** (e.g. `https://confluence.company.com/display/MYAPP/Architecture`),
+fetch **the parent page itself PLUS all its direct child pages**.
+This returns a JSON array of `{"id", "title", "url"}` objects covering the parent and every child.
 
 ```python
-import httpx, os, json
+import httpx, os, json, re
 from dotenv import load_dotenv
 load_dotenv()
-base  = os.environ["CONFLUENCE_BASE_URL"].rstrip("/")
-auth  = (os.environ["CONFLUENCE_USERNAME"], os.environ["CONFLUENCE_API_TOKEN"])
-space = "SPACE_KEY"   # ← replace with actual space key
-params = {"spaceKey": space, "limit": 250, "expand": "version"}
-resp = httpx.get(f"{base}/rest/api/content", params=params, auth=auth, timeout=30, verify=False)
-resp.raise_for_status()
-pages = [{"id": p["id"], "title": p["title"]} for p in resp.json().get("results", [])]
+base = os.environ["CONFLUENCE_BASE_URL"].rstrip("/")
+auth = (os.environ["CONFLUENCE_USERNAME"], os.environ["CONFLUENCE_API_TOKEN"])
+
+page_url = "FULL_PAGE_URL"  # ← replace with the URL the user provided
+
+# Step 1: resolve page URL → page ID via the content-by-title or tiny-link API
+# Try space+title extraction from the URL first
+m = re.search(r'/display/([^/]+)/(.+?)(?:\?|$)', page_url)
+if m:
+    space_key = m.group(1)
+    title_slug = m.group(2).replace('+', ' ').replace('%20', ' ')
+    resp = httpx.get(
+        f"{base}/rest/api/content",
+        params={"spaceKey": space_key, "title": title_slug, "expand": "version"},
+        auth=auth, timeout=30, verify=False
+    )
+    resp.raise_for_status()
+    results = resp.json().get("results", [])
+    if not results:
+        raise ValueError(f"Could not find page with title '{title_slug}' in space '{space_key}'")
+    parent_id = results[0]["id"]
+    parent_title = results[0]["title"]
+else:
+    # URL is a direct page ID link: .../pages/12345678
+    m2 = re.search(r'/pages/(\d+)', page_url)
+    if not m2:
+        raise ValueError(f"Cannot extract page ID from URL: {page_url}")
+    parent_id = m2.group(1)
+    meta = httpx.get(f"{base}/rest/api/content/{parent_id}",
+                     params={"expand": "version"}, auth=auth, timeout=30, verify=False)
+    meta.raise_for_status()
+    parent_title = meta.json().get("title", parent_id)
+
+# Step 2: fetch parent page itself + all child pages
+pages = [{"id": parent_id, "title": parent_title, "url": page_url, "is_parent": True}]
+
+children_resp = httpx.get(
+    f"{base}/rest/api/content/{parent_id}/child/page",
+    params={"limit": 250, "expand": "version"},
+    auth=auth, timeout=30, verify=False
+)
+children_resp.raise_for_status()
+for c in children_resp.json().get("results", []):
+    pages.append({"id": c["id"], "title": c["title"],
+                  "url": f"{base}/pages/{c['id']}", "is_parent": False})
+
 print(json.dumps(pages, indent=2))
 ```
 
 **Self-validation after running:**
-- Output must be a JSON array (not an error or HTML login page).
-- If empty `[]`, verify the space key is correct and the token has read access.
-- If HTTP 401 → credentials are wrong; ask the user to re-check `.env`.
-- If SSL error → this should never happen with `verify=False`; report the exact error.
+- Output must be a JSON array.
+- The first entry must have `"is_parent": true`.
+- If empty `[]`, the URL or space key could not be resolved — ask the user to re-check the URL.
+- If HTTP 401/403 → switch to VS Code Confluence tool (see fallback rule above).
+- If SSL error → should never happen with `verify=False`; report exact error.
 
 ### Skill: `confluence_read_page`
 
@@ -88,7 +140,6 @@ Fetches the plain-text body of a single Confluence page by its numeric ID.
 
 ```python
 import httpx, os, re
-from html.parser import HTMLParser
 from dotenv import load_dotenv
 load_dotenv()
 base    = os.environ["CONFLUENCE_BASE_URL"].rstrip("/")
@@ -113,7 +164,8 @@ print(text[:8000])   # print first 8000 chars for review
 **Self-validation after running:**
 - Title and body must be non-empty strings.
 - If body is only whitespace or very short (< 50 chars), the page may be empty or macro-only — note it and skip.
-- If HTTP 404 → the page ID is wrong; re-check with `confluence_list_pages`.
+- If HTTP 401/403 → switch to VS Code Confluence tool (see fallback rule above).
+- If HTTP 404 → the page ID is wrong; re-check with `confluence_list_pages_by_url`.
 - If the body looks like raw XML/macro definitions with no readable text, strip further with:
   ```python
   text = re.sub(r"<ac:[^>]+>.*?</ac:[^>]+>", " ", text, flags=re.DOTALL)
@@ -129,13 +181,14 @@ print(text[:8000])   # print first 8000 chars for review
    - `CONFLUENCE_USERNAME` — username or email for Confluence login
    - `CONFLUENCE_API_TOKEN` — personal access token or password
 3. **Dependencies installed:** run `pip install -r requirements.txt` if not done.
-4. **Reference dashboard JSON** exists at the path the user provides.
-5. **Skill connectivity verified:** run the `confluence_list_pages` skill for the provided space key. Apply the Validation Gate below before proceeding.
+4. **Reference dashboard template:** already bundled at `.github/agents/grafana_json_standar/standar.json` — no user action needed.
+5. **Skill connectivity verified:** run the `confluence_list_pages_by_url` skill for the provided APP page URL. Apply the Validation Gate below before proceeding.
 
 **Validation Gate — Prerequisites:**
 - `.env` file exists and contains non-empty values for all three Confluence variables.
 - `pip install -r requirements.txt` exits with code 0 and no import errors.
-- `confluence_list_pages` returns a valid JSON array with at least one entry.
+- `confluence_list_pages_by_url` returns a valid JSON array with at least one entry.
+- If `confluence_list_pages_by_url` returns HTTP 401/403, check tool list for a VS Code Confluence tool and switch to it.
 - ❌ If any check fails → fix it and re-verify. Do not continue until all pass.
 
 ---
@@ -144,35 +197,40 @@ print(text[:8000])   # print first 8000 chars for review
 
 | Input | Description |
 |---|---|
-| `APP_SPACE` | Confluence space key for the target application (e.g. `MYAPP`) |
-| `RCA_SPACE` | Confluence space key for RCA / incident pages (e.g. `MYRCA`) |
-| Reference dashboard JSON | Path to an existing Grafana dashboard JSON (layout + colour template) |
-| Middleware icons | SVG/PNG files hand-crafted by the user for each middleware component. **REQUIRED before drawing.** |
+| APP page URL | Confluence URL of the parent page for the target application (e.g. `https://confluence.company.com/display/MYAPP/Architecture`) |
+| RCA page URL | Confluence URL of the parent page for RCA/incident history (optional; if omitted, Step 3 uses defaults) |
+| Middleware icons | SVG/PNG files hand-crafted by the user for each non-built-in middleware component. **REQUIRED before drawing.** |
 
 ---
 
 ## Step-by-Step Workflow
 
-### Step 1 — List app space pages
+### Step 1 — List app pages from the provided URL
 
-Use the **`confluence_list_pages` skill** (see Skill Reference above), replacing `SPACE_KEY` with the value of `APP_SPACE`.
+Use the **`confluence_list_pages_by_url` skill** (see Skill Reference above), replacing `FULL_PAGE_URL` with the **APP page URL** the user provided.
 
-This returns a JSON array of `{"id": "...", "title": "..."}` objects.
+This returns a JSON array of `{"id", "title", "url", "is_parent"}` objects covering **the parent page itself plus all its direct child pages**.
+
+> The parent page (`"is_parent": true`) MUST also be read in Step 2 — it often contains architecture overviews, integration summaries, or business function descriptions that are not repeated in child pages.
 
 Review the titles and decide which pages are likely to contain useful information
 (architecture, integrations, business functions, metrics, monitoring).
 
 **Validation Gate — Step 1:**
 - ✅ Output is a valid JSON array.
-- ✅ Array contains at least 1 entry with both `id` and `title` fields.
+- ✅ Array contains at least 1 entry with `id`, `title`, and `is_parent` fields.
+- ✅ The first entry has `"is_parent": true`.
 - ✅ At least 1 page title looks relevant (architecture / integration / monitoring / overview).
-- ❌ Empty array → space key is wrong or token lacks permission. Fix and retry.
+- ❌ Empty array → the URL could not be resolved. Ask the user to re-check the URL.
+- ❌ HTTP 401/403 → switch to VS Code Confluence tool (see Skill Reference fallback rule).
 - ❌ HTTP error or HTML response → credentials or base URL wrong. Fix `.env` and retry.
 - ❌ If validation fails after 3 attempts → stop and report to user. Do NOT proceed to Step 2.
 
 ### Step 2 — Read useful pages
 
 For each page you decided to read, use the **`confluence_read_page` skill** (see Skill Reference above), replacing `PAGE_ID` with the actual page ID from Step 1.
+
+> **Always include the parent page** (`"is_parent": true`) in your reading list, even if its title seems generic. Architecture overviews and cross-cutting integration details are frequently in the parent page only.
 
 For each page read, apply the Validation Gate before extracting knowledge:
 
@@ -195,11 +253,16 @@ From each passing page, extract:
 
 Skip pages that are only meeting notes, HR, finance, changelogs, or unrelated apps.
 
-### Step 3 — Read RCA space pages + produce rca_analysis.json
+### Step 3 — Read RCA pages + produce rca_analysis.json
 
-Use the **`confluence_list_pages` skill** again, replacing `SPACE_KEY` with the value of `RCA_SPACE`.
+If the user provided a **RCA page URL**, use the **`confluence_list_pages_by_url` skill** with that URL.
+This returns the parent RCA page itself plus all child RCA/incident pages.
+
+> The parent RCA page (`"is_parent": true`) MUST also be read — it often contains an incident summary index or recurring theme analysis.
 
 For each relevant RCA page, use the **`confluence_read_page` skill** to fetch its content.
+
+If the user did **not** provide an RCA URL, skip straight to the output rules below (use defaults).
 
 For each RCA page read, apply the Validation Gate before extracting:
 
@@ -207,7 +270,8 @@ For each RCA page read, apply the Validation Gate before extracting:
 - ✅ Page body mentions an incident, outage, problem, or root cause.
 - ✅ At least one business impact or failure mode can be identified.
 - ❌ Page contains no incident content → skip it, do not extract from it.
-- ❌ `confluence_list_pages` for RCA space returns empty → note it and continue to Step 4 without RCA analysis (Step 3 is optional; failure here does NOT block Step 4).
+- ❌ `confluence_list_pages_by_url` for RCA URL returns empty or URL not provided → note it and continue to Step 4 without RCA analysis (Step 3 is optional; failure here does NOT block Step 4).
+- ❌ HTTP 401/403 → switch to VS Code Confluence tool (see Skill Reference fallback rule).
 
 **From each passing RCA page, identify:**
 1. **Top 3 business metrics** most frequently implicated in incidents — use 1–2 word short labels (e.g. `"DDI"`, `"eDDA"`, `"D3"`).  For each, list the 2 most relevant timeseries metric names (Req Count / Resp Count style).
@@ -397,7 +461,7 @@ else:
 ```bash
 python tools/build_drawio.py \
   --knowledge output/knowledge.json \
-  --example   PATH_TO_REFERENCE_DASHBOARD \
+  --example   .github/agents/grafana_json_standar/standar.json \
   --output    output/APPNAME_flow.xml \
   --svgs      svgs/
 ```
@@ -533,7 +597,7 @@ The Z5-MAIN panel is `h=18, w=18` Grafana grid units. At standard Grafana scale 
 ```bash
 python tools/build_dashboard.py \
   --knowledge   output/knowledge.json \
-  --example     PATH_TO_REFERENCE_DASHBOARD \
+  --example     .github/agents/grafana_json_standar/standar.json \
   --flow-xml    output/APPNAME_flow.xml \
   --output      output/ \
   --title-panel .github/agents/panel_templates/title_panel.json \
@@ -541,12 +605,11 @@ python tools/build_dashboard.py \
   --rca-analysis output/rca_analysis.json
 ```
 
-> **Before running Step 7**, verify that both panel template files exist:
-> - `.github/agents/panel_templates/title_panel.json`
-> - `.github/agents/panel_templates/alert_panel.json`
+> **Before running Step 7**, check whether the optional panel template files exist:
+> - `.github/agents/panel_templates/title_panel.json` — if present, used for Z1-A; if absent, Z1-A is taken directly from `standar.json` (no user action required).
+> - `.github/agents/panel_templates/alert_panel.json` — if present, used for Z1-B; if absent, Z1-B is taken directly from `standar.json` (no user action required).
 >
-> If either file is missing, **STOP** and ask the user to provide it.
-> Do NOT proceed with a synthesized panel for Z1-A or Z1-B.
+> These files are **optional**. Do NOT stop if they are missing — omit the `--title-panel` / `--alert-panel` flags from the command and proceed.
 
 **Read `.github/agents/dashboard_panel_reference.md` before mapping any panel content.**
 
