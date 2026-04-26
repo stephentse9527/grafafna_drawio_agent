@@ -613,15 +613,13 @@ class DrawIOBuilder:
 
         stroke  = self.cs.healthy_stroke
         box_x   = abs_x - CONN_BOX_W / 2
-        box_y   = y_top + TB_CONN_BOX_Y
+        box_y   = (y_top + y_bot - CONN_UNIT_H) / 2.0  # centre icon box in the connection gap
 
         # 1. Vertical fixed-geometry arrow — placed FIRST (behind icon box)
         self._cells.append(dict(
             id=_cid("arrow"), value="",
             style=(
-                f"edgeStyle=none;html=1;"
-                f"exitX=0.5;exitY=1;exitDx=0;exitDy=0;"
-                f"entryX=0.5;entryY=0;entryDx=0;entryDy=0;"
+                f"edgeStyle=none;html=1;rounded=0;"
                 f"strokeColor={stroke};strokeWidth=2;"
                 f"startArrow=block;startFill=1;"
                 f"endArrow=block;endFill=1;"
@@ -751,6 +749,10 @@ class DrawIOBuilder:
                 if "target_point" in cell:
                     tx, ty = cell["target_point"]
                     ET.SubElement(geom, "mxPoint", x=str(tx), y=str(ty), **{"as": "targetPoint"})
+                if "waypoints" in cell:
+                    pts_el = ET.SubElement(geom, "Array", **{"as": "points"})
+                    for wx, wy in cell["waypoints"]:
+                        ET.SubElement(pts_el, "mxPoint", x=str(round(wx)), y=str(round(wy)))
 
         return ET.tostring(root, encoding="unicode")
 
@@ -767,32 +769,51 @@ def compose_flow_diagram(
     """
     Build the complete flow diagram DrawIO XML.
 
-    One connection unit per upstream/downstream GROUP, positioned so:
-      left_edge  = upstream frame right edge
-      right_edge = app frame left edge (or downstream frame left edge)
-      center_y   = center of the group it connects
+    Design philosophy (inspired by the e-Collections reference diagram):
+    ─────────────────────────────────────────────────────────────────────
+    • ALL elements share a proportional height — no element is arbitrarily
+      taller or shorter than its neighbours.
+    • Connection arrows span the ACTUAL gap between columns — not a fixed
+      constant.  The icon box is centred inside that gap.
+    • Block/frame widths adapt to the available column width so the diagram
+      fills the canvas without whitespace or overflow.
+    • LR layout: upstream col | gap | APP frame | gap | downstream col
+    • TB layout: upstream row ↕ gap ↕ APP frame ↕ gap ↕ downstream row
 
-    Fixed-geometry arrows inside each connection unit prevent all routing issues.
+    Adaptive sizing rules
+    ─────────────────────
+    LR:
+      - canvas_h is chosen to be "tall enough" (min 600px, or enough for all
+        groups to display without cramping).
+      - Each upstream/downstream GROUP occupies an equal slice of canvas_h,
+        so ALL groups have the same height regardless of member count.
+      - Inside each group, blocks stretch to fill the group height evenly.
+      - The connection gap (between upstream right and app left, and between
+        app right and downstream left) is computed from the actual column positions.
+      - The icon box is centred in the connection gap both horizontally and
+        vertically relative to the group it connects.
+    TB:
+      - Each group occupies an equal slice of dynamic_app_w (same proportional
+        logic as LR but horizontal).
+      - Groups stretch vertically to fill the slice height.
+      - Connection arrows span the actual vertical gap (variable).
     """
     builder = DrawIOBuilder(color_scheme)
-    TOP = 40.0  # top margin
-    CONN_UNIT_GAP = 8  # vertical gap between stacked connection units
 
-    # ---- collect upstream groups (handle ungrouped upstreams as singletons) ----
+    # ── collect groups ───────────────────────────────────────────────────────
     grouped_up = {m for members in knowledge.upstream_groups.values() for m in members}
     all_up_raw: List[Tuple[str, List[str]]] = list(knowledge.upstream_groups.items())
     for u in knowledge.upstreams:
         if u.name not in grouped_up:
             all_up_raw.append((u.name, [u.name]))
 
-    # ---- collect downstream groups ----
     grouped_dn = {m for members in knowledge.downstream_groups.values() for m in members}
     all_dn_raw: List[Tuple[str, List[str]]] = list(knowledge.downstream_groups.items())
     for d in knowledge.downstreams:
         if d.name not in grouped_dn:
             all_dn_raw.append((d.name, [d.name]))
 
-    # ---- gather ALL unique middlewares per group (ordered, deduplicated) ----
+    # ── unique middlewares per group ─────────────────────────────────────────
     def up_mws(members: List[str]) -> List[str]:
         seen: List[str] = []
         for m in members:
@@ -809,22 +830,11 @@ def compose_flow_diagram(
                     seen.append(d.connection_middleware)
         return seen or ["Solace"]
 
-    # Augment groups with their middleware lists
     # (group_name, members, [mw1, mw2, ...])
-    all_up = [(n, m, up_mws(m)) for n, m in all_up_raw]
-    all_dn = [(n, m, dn_mws(m)) for n, m in all_dn_raw]
+    all_up: List[Tuple[str, List[str], List[str]]] = [(n, m, up_mws(m)) for n, m in all_up_raw]
+    all_dn: List[Tuple[str, List[str], List[str]]] = [(n, m, dn_mws(m)) for n, m in all_dn_raw]
 
-    # ---- helper: frame height accounts for both blocks AND stacked conn units ----
-    def frame_h(n_members: int, n_mws: int) -> float:
-        block_h = FRAME_PAD * 2 + 20 + n_members * BLOCK_H + max(0, n_members - 1) * BLOCK_GAP
-        conn_h  = n_mws * CONN_UNIT_H + max(0, n_mws - 1) * CONN_UNIT_GAP + FRAME_PAD * 2
-        return max(block_h, conn_h)
-
-    def col_h(groups: List[Tuple[str, List[str], List[str]]]) -> float:
-        return (sum(frame_h(len(m), len(mws)) for _, m, mws in groups)
-                + max(0, len(groups) - 1) * GROUP_GAP)
-
-    # ---- infra = internal infra components only (NOT connection middleware) ----
+    # ── infra items (not connection middleware) ──────────────────────────────
     conn_mw_names = {u.connection_middleware.lower() for u in knowledge.upstreams}
     conn_mw_names |= {d.connection_middleware.lower() for d in knowledge.downstreams}
     infra = [
@@ -833,69 +843,507 @@ def compose_flow_diagram(
         and mc.name.lower() not in conn_mw_names
     ]
 
-    n_fns = len(knowledge.business_functions)
-    # Compute how much infra group box adds to the app frame height
-    if infra:
-        _icols = INFRA_COLS
-        _irows = (len(infra) + _icols - 1) // _icols
-        _igrid_h = _irows * INFRA_ITEM_H + max(0, _irows - 1) * INFRA_V_GAP
-        _igroup_h = _igrid_h + INFRA_GROUP_PAD * 2 + INFRA_GROUP_LABEL_H
-        infra_section_h = BLOCK_GAP + _igroup_h
-    else:
-        infra_section_h = 0
-    app_inner = (
-        20 + n_fns * BLOCK_H + max(0, n_fns - 1) * BLOCK_GAP
-        + infra_section_h
-    )
-    app_h = max(app_inner + FRAME_PAD * 2, col_h(all_up), col_h(all_dn))
-
+    n_fns   = len(knowledge.business_functions)
+    n_up    = max(len(all_up), 1)
+    n_dn    = max(len(all_dn), 1)
     app_slug = _slug(knowledge.app_name or "application")
 
-    # ---- auto-select layout direction (LR vs TB) ----
-    # LR (left-to-right): upstream | conn-units | APP | conn-units | downstream
-    # TB (top-to-bottom): upstream row ↓ conn-arrows ↓ APP ↓ conn-arrows ↓ downstream row
-    #
-    # Switch to TB when:
-    #   (a) either side has > LR_MAX_GROUPS groups — LR column becomes too tall, OR
-    #   (b) LR canvas width:height would exceed LR_ASPECT_LIMIT — diagram too wide
-    #       for the Z5-MAIN panel (≈ 5:3 aspect) without excessive letterboxing
-    _ltr_w = DOWNSTREAM_COL_X + UP_FRAME_W + 60
-    _ltr_h = TOP + app_h + 80
-    _ltr_aspect = _ltr_w / max(_ltr_h, 1.0)
-    use_tb = (_ltr_aspect > LR_ASPECT_LIMIT) or (max(len(all_up), len(all_dn)) > LR_MAX_GROUPS)
+    # ── LR/TB decision ───────────────────────────────────────────────────────
+    # Use TB when either side has more than LR_MAX_GROUPS groups.
+    # For small group counts check whether the LR canvas would be too wide.
+    _ltr_w_est = DOWNSTREAM_COL_X + UP_FRAME_W + 60
+    _ltr_h_est = 600.0  # minimum canvas height we always enforce
+    _ltr_aspect = _ltr_w_est / _ltr_h_est
+    use_tb = (_ltr_aspect > LR_ASPECT_LIMIT) or (max(n_up, n_dn) > LR_MAX_GROUPS)
 
-    # ---- shared helper: draw app-frame contents at a given (ax, ay) origin ----
-    def _draw_app_contents(ax: float, ay: float) -> None:
-        app_block_w = APP_FRAME_W - FRAME_PAD * 2
-        total_fn_h = n_fns * BLOCK_H + max(0, n_fns - 1) * BLOCK_GAP
-        fn_y = ay + max(FRAME_PAD + 20, (app_h - total_fn_h) / 2)
-        for fn in knowledge.business_functions:
+    # ════════════════════════════════════════════════════════════════════════
+    # LR LAYOUT
+    # ════════════════════════════════════════════════════════════════════════
+    if not use_tb:
+        # ── fixed horizontal column dimensions ──────────────────────────────
+        MARGIN_TOP    = 40.0
+        MARGIN_BOTTOM = 40.0
+        MARGIN_LEFT   = 20.0
+        MARGIN_RIGHT  = 20.0
+        LR_UP_COL_W  = 148.0   # upstream/downstream frame column width
+        LR_CONN_GAP  = 160.0   # gap between col and APP frame (holds icon box)
+        LR_APP_W     = 280.0   # app frame width
+        LR_DN_COL_W  = 148.0
+        LR_GROUP_GAP = 16.0    # minimum gap between consecutive groups
+
+        canvas_w = int(MARGIN_LEFT + LR_UP_COL_W + LR_CONN_GAP
+                       + LR_APP_W + LR_CONN_GAP + LR_DN_COL_W + MARGIN_RIGHT)
+
+        # ── natural (compact) height of each group ───────────────────────────
+        # Groups are NEVER stretched — blocks stay at BLOCK_H = 36px.
+        # A "bare block" is a singleton whose name equals its single member.
+        def _lr_group_h(name: str, members: List[str]) -> float:
+            if len(members) == 1 and name == members[0]:
+                return float(BLOCK_H + 16)   # block + 8px top/bottom breathing room
+            n = len(members)
+            return float(FRAME_PAD * 2 + 20 + n * BLOCK_H + max(0, n - 1) * BLOCK_GAP)
+
+        up_ghs = [_lr_group_h(n, m) for n, m, _ in all_up]
+        dn_ghs = [_lr_group_h(n, m) for n, m, _ in all_dn]
+
+        # ── infra dimensions ─────────────────────────────────────────────────
+        infra_group_h = 0.0
+        if infra:
+            i_rows        = (len(infra) + INFRA_COLS - 1) // INFRA_COLS
+            igrid_h       = i_rows * INFRA_ITEM_H + max(0, i_rows - 1) * INFRA_V_GAP
+            infra_group_h = igrid_h + INFRA_GROUP_PAD * 2 + INFRA_GROUP_LABEL_H
+
+        # ── app natural height (sized exactly to content) ────────────────────
+        fn_total_h    = n_fns * BLOCK_H + max(0, n_fns - 1) * BLOCK_GAP
+        infra_sect_h  = (BLOCK_GAP * 2 + infra_group_h) if infra else 0
+        app_natural_h = float(FRAME_PAD * 2 + 20 + fn_total_h + infra_sect_h)
+
+        # ── usable height = tallest element column (min 240px) ───────────────
+        # Groups are distributed with even gaps; this is the vertical range.
+        total_up_gh = sum(up_ghs) + max(0, n_up - 1) * LR_GROUP_GAP
+        total_dn_gh = sum(dn_ghs) + max(0, n_dn - 1) * LR_GROUP_GAP
+        usable_h    = max(total_up_gh, total_dn_gh, app_natural_h, 240.0)
+        canvas_h    = int(usable_h + MARGIN_TOP + MARGIN_BOTTOM)
+
+        # ── column X positions ───────────────────────────────────────────────
+        lx_up     = MARGIN_LEFT
+        lx_conn_l = lx_up + LR_UP_COL_W
+        lx_app    = lx_conn_l + LR_CONN_GAP
+        lx_conn_r = lx_app + LR_APP_W
+        lx_dn     = lx_conn_r + LR_CONN_GAP
+
+        # ── app frame: compact height, vertically centred ────────────────────
+        app_h = app_natural_h
+        app_y = MARGIN_TOP + (usable_h - app_h) / 2.0
+
+        # ── distribute groups with even gaps, centred if only one ────────────
+        MAX_GAP = 80.0   # cap inter-group gap so columns don't look sparse
+
+        def _col_positions(ghs: List[float], n: int) -> Tuple[float, List[float]]:
+            """Return (start_y, [gap_after_group_0, gap_after_group_1, ...]).
+
+            start_y is MARGIN_TOP (or centred for single group).
+            Gaps are capped at MAX_GAP; the whole column is centred when capped.
+            """
+            if n == 0:
+                return MARGIN_TOP, []
+            if n == 1:
+                return MARGIN_TOP + (usable_h - ghs[0]) / 2.0, [0.0]
+            total_gh = sum(ghs)
+            raw_gap  = (usable_h - total_gh) / (n - 1)
+            gap      = min(MAX_GAP, max(LR_GROUP_GAP, raw_gap))
+            col_h    = total_gh + (n - 1) * gap
+            start_y  = MARGIN_TOP + (usable_h - col_h) / 2.0
+            return start_y, [gap] * (n - 1) + [0.0]
+
+        up_start_y, up_gaps = _col_positions(up_ghs, n_up)
+        dn_start_y, dn_gaps = _col_positions(dn_ghs, n_dn)
+
+        # ── draw app frame contents (top-aligned, no centering whitespace) ───
+        def _draw_app_contents_lr(ax: float, ay: float, aw: float) -> None:
+            inner_w = aw - FRAME_PAD * 2
+            fn_y    = ay + FRAME_PAD + 20   # label clearance
+            for fn in knowledge.business_functions:
+                builder.add_solid_block(
+                    fn.name,
+                    Rect(ax + FRAME_PAD, fn_y, inner_w, BLOCK_H),
+                    cell_id=f"app_fn_{_slug(fn.name)}",
+                )
+                fn_y += BLOCK_H + BLOCK_GAP
+            if infra:
+                igrid_w  = INFRA_COLS * INFRA_ITEM_W + (INFRA_COLS - 1) * INFRA_H_GAP
+                igroup_w = igrid_w + INFRA_GROUP_PAD * 2
+                igx      = ax + (aw - igroup_w) / 2.0
+                igy      = fn_y + BLOCK_GAP   # one-gap separator
+                builder.add_frame(
+                    "Infrastructure",
+                    Rect(igx, igy, igroup_w, infra_group_h),
+                    cell_id=f"infra_group_{app_slug}",
+                    dashed=True, stroke_width=2, font_size=10, bold=False,
+                )
+                for idx, mc in enumerate(infra):
+                    col_i = idx % INFRA_COLS
+                    row_i = idx // INFRA_COLS
+                    ix = igx + INFRA_GROUP_PAD + col_i * (INFRA_ITEM_W + INFRA_H_GAP)
+                    iy = (igy + INFRA_GROUP_LABEL_H + INFRA_GROUP_PAD
+                          + row_i * (INFRA_ITEM_H + INFRA_V_GAP))
+                    builder.add_infra_icon(
+                        mc.name, Rect(ix, iy, INFRA_ITEM_W, INFRA_ITEM_H),
+                        svg_content=_find_svg(mc.name, component_svgs),
+                        builtin_spec=_resolve_spec(mc.name),
+                        base_id=f"infra_{_slug(mc.name)}",
+                    )
+
+        # ── draw one group at its natural compact size ───────────────────────
+        def _draw_lr_group(
+            name: str, members: List[str], col_x: float, col_w: float,
+            group_y: float, group_h: float, cell_prefix: str,
+        ) -> None:
+            g_slug  = _slug(name)
+            is_bare = (len(members) == 1 and name == members[0])
+            if is_bare:
+                # Bare singleton block — fixed height BLOCK_H, centred in natural slot
+                bh = float(BLOCK_H)
+                by = group_y + (group_h - bh) / 2.0
+                builder.add_solid_block(
+                    members[0],
+                    Rect(col_x, by, col_w, bh),
+                    cell_id=f"{cell_prefix}_{g_slug}",
+                )
+            else:
+                # Dashed frame wrapping member blocks at fixed BLOCK_H
+                builder.add_frame(
+                    name,
+                    Rect(col_x, group_y, col_w, group_h),
+                    cell_id=f"{cell_prefix}_frame_{g_slug}",
+                    dashed=True, stroke_width=2,
+                )
+                iy = group_y + FRAME_PAD + 20
+                bw = col_w - FRAME_PAD * 2
+                for m in members:
+                    builder.add_solid_block(
+                        m,
+                        Rect(col_x + FRAME_PAD, iy, bw, BLOCK_H),
+                        cell_id=f"{cell_prefix}_{g_slug}_{_slug(m)}",
+                    )
+                    iy += BLOCK_H + BLOCK_GAP
+
+        # ── draw one LR connection icon + elbow-routed arrow in the gap ─────
+        def _draw_lr_connection(
+            mw: str,
+            x_left: float, x_right: float,   # gap boundaries
+            group_cy: float,                   # group center y (on the group side)
+            port_y: float,                     # app wall attachment y (may differ)
+            base_id: str,
+            is_upstream: bool = True,
+        ) -> None:
+            """
+            Route the connection with an elbow bend near the APP side so that:
+            - Upstream  (is_upstream=True) : long segment near group, bend 20px before app.
+            - Downstream (is_upstream=False): short segment near app, bend 20px after app,
+                                              long segment near group.
+            The middleware icon-box sits on the long segment at group_cy.
+            When group_cy == port_y (no offset needed), the path is a straight line.
+            Non-crossing guarantee: groups and ports are both ordered top-to-bottom,
+            so vertical segments at the same bend_x never intersect.
+            """
+            gap_w  = x_right - x_left
+            box_w  = min(CONN_BOX_W, max(40.0, gap_w - 30.0))
+            box_h  = float(CONN_UNIT_H)
+            stroke = builder.cs.healthy_stroke
+
+            svg_content  = _find_svg(mw, component_svgs)
+            builtin_spec = _resolve_spec(mw)
+
+            def _cid(s: str) -> str:
+                return f"{base_id}_{s}"
+
+            needs_elbow = abs(group_cy - port_y) > 2.0
+
+            if is_upstream:
+                # Flow: group (x_left, group_cy) → [long segment+box] → [bend] → app (x_right, port_y)
+                bend_x       = x_right - 20.0
+                src_pt       = (x_left, group_cy)
+                tgt_pt       = (x_right, port_y)
+                waypoints    = [(bend_x, group_cy), (bend_x, port_y)] if needs_elbow else []
+                seg_end      = bend_x if needs_elbow else x_right
+                box_center_x = (x_left + seg_end) / 2.0
+                box_y        = group_cy - box_h / 2.0
+            else:
+                # Flow: app (x_left, port_y) → [bend] → [long segment+box] → group (x_right, group_cy)
+                bend_x       = x_left + 20.0
+                src_pt       = (x_left, port_y)
+                tgt_pt       = (x_right, group_cy)
+                waypoints    = [(bend_x, port_y), (bend_x, group_cy)] if needs_elbow else []
+                seg_start    = bend_x if needs_elbow else x_left
+                box_center_x = (seg_start + x_right) / 2.0
+                box_y        = group_cy - box_h / 2.0
+
+            box_x = box_center_x - box_w / 2.0
+
+            # Arrow with optional elbow waypoints
+            arrow_dict = dict(
+                id=_cid("arrow"), value="",
+                style=(
+                    f"edgeStyle=none;html=1;rounded=0;strokeColor={stroke};strokeWidth=2;"
+                    f"startArrow=none;startFill=1;endArrow=block;endFill=1;"
+                ),
+                edge="1", parent="1",
+                source_point=src_pt,
+                target_point=tgt_pt,
+            )
+            if waypoints:
+                arrow_dict["waypoints"] = waypoints
+            builder._cells.append(arrow_dict)
+
+            if svg_content:
+                b64 = base64.b64encode(svg_content.encode("utf-8")).decode("ascii")
+                builder._cells.append(dict(
+                    id=_cid("svg"), value="",
+                    style=(
+                        f"shape=image;html=1;aspect=fixed;imageAspect=0;"
+                        f"image=data:image/svg+xml,{b64};"
+                    ),
+                    vertex="1", connectable="0", parent="1",
+                    x=box_x, y=group_cy - CONN_SVG_H / 2.0,
+                    w=CONN_SVG_W, h=CONN_SVG_H,
+                ))
+            else:
+                builder._cells.append(dict(
+                    id=_cid("box"), value="",
+                    style=(
+                        f"rounded=1;whiteSpace=wrap;html=1;"
+                        f"strokeColor={stroke};strokeWidth=2;fillColor=#111217;"
+                    ),
+                    vertex="1", connectable="0", parent="1",
+                    x=box_x, y=box_y, w=box_w, h=box_h,
+                ))
+                if builtin_spec and not builtin_spec.get("label_only"):
+                    ico_w = min(builtin_spec["icon_w"], box_w - 30)
+                    ico_h = builtin_spec["icon_h"]
+                    ico_x = box_x + 4
+                    ico_y = box_y + (box_h - ico_h) / 2.0
+                    builder._cells.append(dict(
+                        id=_cid("icon"), value="",
+                        style=builtin_spec["icon_style"],
+                        vertex="1", connectable="0", parent="1",
+                        x=ico_x, y=ico_y, w=ico_w, h=ico_h,
+                    ))
+                    if builtin_spec.get("label"):
+                        lbl_x = ico_x + ico_w + 2
+                        lbl_w = box_x + box_w - lbl_x
+                        builder._cells.append(dict(
+                            id=_cid("label"),
+                            value=html.escape(builtin_spec["label"]),
+                            style=(
+                                "text;html=1;align=left;verticalAlign=middle;"
+                                "whiteSpace=wrap;rounded=0;fillColor=none;"
+                                "fontColor=#FFFFFF;fontSize=11;"
+                            ),
+                            vertex="1", connectable="0", parent="1",
+                            x=lbl_x, y=box_y, w=lbl_w, h=box_h,
+                        ))
+                else:
+                    label = (builtin_spec or {}).get("label") or mw
+                    builder._cells.append(dict(
+                        id=_cid("label"),
+                        value=html.escape(label),
+                        style=(
+                            "text;html=1;align=center;verticalAlign=middle;"
+                            "whiteSpace=wrap;rounded=0;fillColor=none;"
+                            "fontColor=#FFFFFF;fontSize=11;"
+                        ),
+                        vertex="1", connectable="0", parent="1",
+                        x=box_x, y=box_y, w=box_w, h=box_h,
+                    ))
+
+        # ── app connection ports: one per group, evenly distributed along the app wall ──
+        # This ensures every connection arrow reaches the app frame even when the
+        # group column is taller than the app.
+        up_ports = [app_y + app_h * (i + 0.5) / n_up for i in range(n_up)]
+        dn_ports = [app_y + app_h * (i + 0.5) / n_dn for i in range(n_dn)]
+
+        # ── draw upstream column ─────────────────────────────────────────────
+        up_y = up_start_y
+        for i, (name, members, mws) in enumerate(all_up):
+            gh = up_ghs[i]
+            _draw_lr_group(name, members, lx_up, LR_UP_COL_W, up_y, gh,
+                           cell_prefix="up_block")
+            # Connection arrows centred on the group; multiple MWs stacked
+            group_cy = up_y + gh / 2.0
+            n_mws    = len(mws)
+            mw_step  = CONN_UNIT_H + 6.0
+            for j, mw in enumerate(mws):
+                offset   = (j - (n_mws - 1) / 2.0) * mw_step
+                conn_cy  = group_cy + offset
+                _draw_lr_connection(mw, lx_conn_l, lx_app, conn_cy, up_ports[i],
+                                    f"cu_up_{_slug(name)}_{_slug(mw)}",
+                                    is_upstream=True)
+            up_y += gh + up_gaps[i]
+
+        # ── draw app frame ───────────────────────────────────────────────────
+        builder.add_frame(
+            knowledge.app_name or "Application",
+            Rect(lx_app, app_y, LR_APP_W, app_h),
+            cell_id=f"app_frame_{app_slug}",
+        )
+        _draw_app_contents_lr(lx_app, app_y, LR_APP_W)
+
+        # ── draw downstream column ───────────────────────────────────────────
+        dn_y = dn_start_y
+        for i, (name, members, mws) in enumerate(all_dn):
+            gh = dn_ghs[i]
+            _draw_lr_group(name, members, lx_dn, LR_DN_COL_W, dn_y, gh,
+                           cell_prefix="dn_block")
+            group_cy = dn_y + gh / 2.0
+            n_mws    = len(mws)
+            mw_step  = CONN_UNIT_H + 6.0
+            for j, mw in enumerate(mws):
+                offset  = (j - (n_mws - 1) / 2.0) * mw_step
+                conn_cy = group_cy + offset
+                _draw_lr_connection(mw, lx_conn_r, lx_dn, conn_cy, dn_ports[i],
+                                    f"cu_dn_{_slug(name)}_{_slug(mw)}",
+                                    is_upstream=False)
+            dn_y += gh + dn_gaps[i]
+
+    # ════════════════════════════════════════════════════════════════════════
+    # TB LAYOUT
+    # ════════════════════════════════════════════════════════════════════════
+    else:
+        # ── group size helpers ───────────────────────────────────────────────
+        def _is_bare_block(name: str, members: List[str]) -> bool:
+            return len(members) == 1 and name == members[0]
+
+        def _tb_min_gw(name: str, members: List[str]) -> float:
+            return float(BLOCK_W if _is_bare_block(name, members) else UP_FRAME_W)
+
+        def _tb_natural_gh(name: str, members: List[str]) -> float:
+            """Compact natural height — blocks always BLOCK_H, no stretching."""
+            if _is_bare_block(name, members):
+                return float(BLOCK_H + 16)
+            n = len(members)
+            return float(FRAME_PAD * 2 + 20 + n * BLOCK_H + max(0, n - 1) * BLOCK_GAP)
+
+        up_natural_ghs = [_tb_natural_gh(n, m) for n, m, _ in all_up]
+        dn_natural_ghs = [_tb_natural_gh(n, m) for n, m, _ in all_dn]
+        up_row_h = max(up_natural_ghs) if up_natural_ghs else float(BLOCK_H + 16)
+        dn_row_h = max(dn_natural_ghs) if dn_natural_ghs else float(BLOCK_H + 16)
+
+        # Minimum APP frame width so proportionally-spaced groups never overlap
+        up_min_gws = [_tb_min_gw(n, m) for n, m, _ in all_up]
+        dn_min_gws = [_tb_min_gw(n, m) for n, m, _ in all_dn]
+
+        def _min_app_w_for_row(gws: List[float], n: int) -> float:
+            if n <= 0 or not gws:
+                return float(APP_FRAME_W)
+            if n == 1:
+                return max(float(APP_FRAME_W), gws[0] + 2 * TB_MARGIN)
+            adj = max(
+                (gws[i] + gws[i + 1]) / 2.0 + TB_H_GAP
+                for i in range(len(gws) - 1)
+            )
+            return float(n) * max(adj, max(gws[0], gws[-1]))
+
+        dynamic_app_w = max(
+            float(APP_FRAME_W),
+            _min_app_w_for_row(up_min_gws, n_up),
+            _min_app_w_for_row(dn_min_gws, n_dn),
+        )
+
+        # App natural height (compact, sized to content)
+        if infra:
+            i_rows        = (len(infra) + INFRA_COLS - 1) // INFRA_COLS
+            i_grid_h      = i_rows * INFRA_ITEM_H + max(0, i_rows - 1) * INFRA_V_GAP
+            infra_group_h_tb = i_grid_h + INFRA_GROUP_PAD * 2 + INFRA_GROUP_LABEL_H
+        else:
+            infra_group_h_tb = 0.0
+
+        # 2-column function grid in TB mode: reduces app height significantly
+        fn_cols_tb = 2 if n_fns > 1 else 1
+        fn_rows_tb = (n_fns + fn_cols_tb - 1) // fn_cols_tb
+        fn_total_h_tb = fn_rows_tb * BLOCK_H + max(0, fn_rows_tb - 1) * BLOCK_GAP
+        infra_sect_tb = (BLOCK_GAP * 2 + infra_group_h_tb) if infra else 0
+        app_h = max(float(FRAME_PAD * 2 + 20 + fn_total_h_tb + infra_sect_tb), 80.0)
+
+        tb_conn_gap = 120.0   # visible arrow = (120 - CONN_UNIT_H) / 2 ≈ 41px each side
+
+        canvas_w = int(dynamic_app_w + 2 * TB_MARGIN)
+        canvas_h = int(TB_MARGIN + up_row_h + tb_conn_gap + app_h
+                       + tb_conn_gap + dn_row_h + TB_MARGIN)
+
+        app_x_tb    = float(TB_MARGIN)
+        up_row_top  = float(TB_MARGIN)
+        up_conn_top = up_row_top + up_row_h
+        app_y_tb    = up_conn_top + tb_conn_gap
+        dn_conn_top = app_y_tb + app_h
+        dn_row_top  = dn_conn_top + tb_conn_gap
+
+        up_slot_w = dynamic_app_w / n_up
+        dn_slot_w = dynamic_app_w / n_dn
+
+        # ── draw upstream groups (natural height, centred in row) ────────────
+        for i, (name, members, mws) in enumerate(all_up):
+            g_cx    = app_x_tb + (i + 0.5) * up_slot_w
+            g_slug  = _slug(name)
+            gh      = up_natural_ghs[i]
+            is_bare = _is_bare_block(name, members)
+            gy      = up_row_top + (up_row_h - gh) / 2.0
+
+            if is_bare:
+                bh = float(BLOCK_H)
+                bw = min(_tb_min_gw(name, members) + 20.0, up_slot_w - 8)
+                builder.add_solid_block(
+                    members[0],
+                    Rect(g_cx - bw / 2.0, gy + (gh - bh) / 2.0, bw, bh),
+                    cell_id=f"up_block_{g_slug}",
+                )
+            else:
+                gw = min(_tb_min_gw(name, members), up_slot_w - 8)
+                gx = g_cx - gw / 2.0
+                builder.add_frame(
+                    name, Rect(gx, gy, gw, gh),
+                    cell_id=f"up_frame_{g_slug}",
+                    dashed=True, stroke_width=2,
+                )
+                iy = gy + FRAME_PAD + 20
+                bw = gw - FRAME_PAD * 2
+                for m in members:
+                    builder.add_solid_block(
+                        m, Rect(gx + FRAME_PAD, iy, bw, BLOCK_H),
+                        cell_id=f"up_block_{g_slug}_{_slug(m)}",
+                    )
+                    iy += BLOCK_H + BLOCK_GAP
+
+            n_mws = len(mws)
+            cu_total_w = n_mws * CONN_BOX_W + max(0, n_mws - 1) * TB_CU_H_SPACING
+            cu_start_x = g_cx - cu_total_w / 2.0 + CONN_BOX_W / 2.0
+            for j, mw in enumerate(mws):
+                cu_x = cu_start_x + j * (CONN_BOX_W + TB_CU_H_SPACING)
+                builder.add_tb_connection_unit(
+                    abs_x=cu_x, y_top=up_conn_top, y_bot=app_y_tb,
+                    component_name=mw,
+                    svg_content=_find_svg(mw, component_svgs),
+                    builtin_spec=_resolve_spec(mw),
+                    base_id=f"cu_up_{g_slug}_{_slug(mw)}",
+                )
+
+        # ── draw app frame (compact, top-aligned, 2-col fn grid) ────────────
+        builder.add_frame(
+            knowledge.app_name or "Application",
+            Rect(app_x_tb, app_y_tb, dynamic_app_w, app_h),
+            cell_id=f"app_frame_{app_slug}",
+        )
+        inner_w    = dynamic_app_w - FRAME_PAD * 2
+        fn_col_w   = (inner_w - (fn_cols_tb - 1) * BLOCK_GAP) / fn_cols_tb
+        fn_y_start = app_y_tb + FRAME_PAD + 20
+        for fi, fn in enumerate(knowledge.business_functions):
+            col_i = fi % fn_cols_tb
+            row_i = fi // fn_cols_tb
+            fx = app_x_tb + FRAME_PAD + col_i * (fn_col_w + BLOCK_GAP)
+            fy = fn_y_start + row_i * (BLOCK_H + BLOCK_GAP)
             builder.add_solid_block(
-                fn.name, Rect(ax + FRAME_PAD, fn_y, app_block_w, BLOCK_H),
+                fn.name,
+                Rect(fx, fy, fn_col_w, BLOCK_H),
                 cell_id=f"app_fn_{_slug(fn.name)}",
             )
-            fn_y += BLOCK_H + BLOCK_GAP
+        fn_y = fn_y_start + fn_rows_tb * BLOCK_H + max(0, fn_rows_tb - 1) * BLOCK_GAP
         if infra:
-            cols = INFRA_COLS
-            rows = (len(infra) + cols - 1) // cols
-            grid_w = cols * INFRA_ITEM_W + (cols - 1) * INFRA_H_GAP
-            grid_h = rows * INFRA_ITEM_H + (rows - 1) * INFRA_V_GAP
-            group_w = grid_w + INFRA_GROUP_PAD * 2
-            group_h = grid_h + INFRA_GROUP_PAD * 2 + INFRA_GROUP_LABEL_H
-            infra_group_x = ax + (APP_FRAME_W - group_w) / 2
-            infra_group_y = fn_y + BLOCK_GAP
+            i_cols   = INFRA_COLS
+            igrid_w  = i_cols * INFRA_ITEM_W + (i_cols - 1) * INFRA_H_GAP
+            igroup_w = igrid_w + INFRA_GROUP_PAD * 2
+            igx      = app_x_tb + (dynamic_app_w - igroup_w) / 2.0
+            igy      = fn_y + BLOCK_GAP
             builder.add_frame(
                 "Infrastructure",
-                Rect(infra_group_x, infra_group_y, group_w, group_h),
+                Rect(igx, igy, igroup_w, infra_group_h_tb),
                 cell_id=f"infra_group_{app_slug}",
                 dashed=True, stroke_width=2, font_size=10, bold=False,
             )
             for idx, mc in enumerate(infra):
-                col_i = idx % cols
-                row_i = idx // cols
-                ix = infra_group_x + INFRA_GROUP_PAD + col_i * (INFRA_ITEM_W + INFRA_H_GAP)
-                iy = (infra_group_y + INFRA_GROUP_LABEL_H + INFRA_GROUP_PAD
-                      + row_i * (INFRA_ITEM_H + INFRA_V_GAP))
+                c_i = idx % i_cols
+                r_i = idx // i_cols
+                ix  = igx + INFRA_GROUP_PAD + c_i * (INFRA_ITEM_W + INFRA_H_GAP)
+                iy  = igy + INFRA_GROUP_LABEL_H + INFRA_GROUP_PAD + r_i * (INFRA_ITEM_H + INFRA_V_GAP)
                 builder.add_infra_icon(
                     mc.name, Rect(ix, iy, INFRA_ITEM_W, INFRA_ITEM_H),
                     svg_content=_find_svg(mc.name, component_svgs),
@@ -903,301 +1351,51 @@ def compose_flow_diagram(
                     base_id=f"infra_{_slug(mc.name)}",
                 )
 
-    if use_tb:
-        # ============================================================
-        # TB layout: upstream row ↓ TB_CONN_UNIT ↓ APP ↓ TB_CONN_UNIT ↓ downstream row
-        #
-        # Connection zones use the SAME icon-box unit as LR, oriented vertically
-        # (from how_connection_with_midleware_TB.drawio):
-        #   - 148px tall vertical span
-        #   - Same 89×38 rounded box, same icon/label as LR
-        #   - Arrow passes through box (z-order: arrow first, box on top)
-        #   - Multiple middlewares per group: side-by-side horizontally
-        #
-        # Adaptive horizontal fill:
-        #   Both upstream and downstream rows are stretched to fill canvas_w
-        #   by increasing inter-group gaps proportionally.
-        # ============================================================
-
-        def _tb_gw(members: List[str]) -> float:
-            return float(UP_FRAME_W if len(members) > 1 else BLOCK_W)
-
-        def _tb_gh(n: int) -> float:
-            if n <= 1:
-                return float(BLOCK_H)
-            return float(FRAME_PAD * 2 + 20 + n * BLOCK_H + max(0, n - 1) * BLOCK_GAP)
-
-        up_gws = [_tb_gw(m) for _, m, _ in all_up]
-        dn_gws = [_tb_gw(m) for _, m, _ in all_dn]
-        up_ghs = [_tb_gh(len(m)) for _, m, _ in all_up]
-        dn_ghs = [_tb_gh(len(m)) for _, m, _ in all_dn]
-
-        max_up_h = max(up_ghs) if up_ghs else float(BLOCK_H)
-        max_dn_h = max(dn_ghs) if dn_ghs else float(BLOCK_H)
-
-        up_row_w_natural = sum(up_gws) + max(0, len(all_up) - 1) * TB_H_GAP
-        dn_row_w_natural = sum(dn_gws) + max(0, len(all_dn) - 1) * TB_H_GAP
-
-        content_w = max(up_row_w_natural, float(APP_FRAME_W), dn_row_w_natural) + 2 * TB_MARGIN
-        canvas_h = int(TB_MARGIN + max_up_h + TB_CONN_UNIT_H + app_h + TB_CONN_UNIT_H + max_dn_h + TB_MARGIN)
-        canvas_w = max(int(content_w), int(canvas_h * Z5_PANEL_ASPECT))
-
-        # ---- adaptive horizontal gap: stretch each row to fill canvas_w ----
-        avail_w = float(canvas_w) - 2 * TB_MARGIN
-
-        def _row_gap(gws: List[float]) -> float:
-            n = len(gws)
-            if n <= 1:
-                return TB_H_GAP
-            natural = sum(gws)
-            gap = (avail_w - natural) / (n - 1)
-            return max(TB_H_GAP, gap)
-
-        up_gap = _row_gap(up_gws)
-        dn_gap = _row_gap(dn_gws)
-
-        # ---- starting x for each row (centred or left-aligned when gap>=TB_H_GAP) ----
-        def _row_start_x(gws: List[float], gap: float) -> float:
-            if not gws:
-                return float(TB_MARGIN)
-            total = sum(gws) + max(0, len(gws) - 1) * gap
-            if len(gws) == 1:
-                return (canvas_w - gws[0]) / 2.0
-            return float(TB_MARGIN)
-
-        app_x_tb = (canvas_w - APP_FRAME_W) / 2.0
-        app_y_tb = TB_MARGIN + max_up_h + TB_CONN_UNIT_H
-        n_up = max(len(all_up), 1)
-        n_dn = max(len(all_dn), 1)
-
-        # ---- draw upstream groups + TB connection units ----
-        up_x = _row_start_x(up_gws, up_gap)
-        for i, (name, members, mws) in enumerate(all_up):
-            gw = up_gws[i]
-            gh = up_ghs[i]
-            gy = TB_MARGIN + (max_up_h - gh) / 2.0
-            g_slug = _slug(name)
-            if len(members) == 1 and name == members[0]:
-                builder.add_solid_block(
-                    members[0],
-                    Rect(up_x + (gw - BLOCK_W) / 2, gy + (gh - BLOCK_H) / 2, BLOCK_W, BLOCK_H),
-                    cell_id=f"up_block_{g_slug}",
-                )
-            else:
-                builder.add_frame(
-                    name, Rect(up_x, gy, gw, gh),
-                    cell_id=f"up_frame_{g_slug}",
-                    dashed=True, stroke_width=2,
-                )
-                iy = gy + FRAME_PAD + 20
-                for m in members:
-                    builder.add_solid_block(
-                        m, Rect(up_x + FRAME_PAD, iy, BLOCK_W, BLOCK_H),
-                        cell_id=f"up_block_{g_slug}_{_slug(m)}",
-                    )
-                    iy += BLOCK_H + BLOCK_GAP
-
-            # TB connection units: one per middleware, side-by-side horizontally
-            # Centred around the proportional entry point on the APP frame top edge
-            app_entry_x = app_x_tb + (i + 0.5) / n_up * APP_FRAME_W
-            n_mws = len(mws)
-            total_cu_w = n_mws * CONN_BOX_W + max(0, n_mws - 1) * TB_CU_H_SPACING
-            cu_start_x = app_entry_x - total_cu_w / 2.0 + CONN_BOX_W / 2.0
-            for j, mw in enumerate(mws):
-                cu_cx = cu_start_x + j * (CONN_BOX_W + TB_CU_H_SPACING)
-                builder.add_tb_connection_unit(
-                    abs_x=cu_cx,
-                    y_top=TB_MARGIN + max_up_h,
-                    y_bot=app_y_tb,
-                    component_name=mw,
-                    svg_content=_find_svg(mw, component_svgs),
-                    builtin_spec=_resolve_spec(mw),
-                    base_id=f"cu_up_{g_slug}_{_slug(mw)}",
-                )
-            up_x += gw + up_gap
-
-        # ---- draw app frame ----
-        builder.add_frame(
-            knowledge.app_name or "Application",
-            Rect(app_x_tb, app_y_tb, APP_FRAME_W, app_h),
-            cell_id=f"app_frame_{app_slug}",
-        )
-        _draw_app_contents(app_x_tb, app_y_tb)
-
-        # ---- draw downstream groups + TB connection units ----
-        dn_conn_y_top = app_y_tb + app_h          # arrow source = app frame bottom
-        dn_row_y      = dn_conn_y_top + TB_CONN_UNIT_H  # downstream group top
-        dn_x = _row_start_x(dn_gws, dn_gap)
+        # ── draw downstream groups (natural height, centred in row) ──────────
         for i, (name, members, mws) in enumerate(all_dn):
-            gw = dn_gws[i]
-            gh = dn_ghs[i]
-            gy = dn_row_y + (max_dn_h - gh) / 2.0
-            g_slug = _slug(name)
-            if len(members) == 1 and name == members[0]:
+            g_cx    = app_x_tb + (i + 0.5) * dn_slot_w
+            g_slug  = _slug(name)
+            gh      = dn_natural_ghs[i]
+            is_bare = _is_bare_block(name, members)
+            gy      = dn_row_top + (dn_row_h - gh) / 2.0
+
+            if is_bare:
+                bh = float(BLOCK_H)
+                bw = min(_tb_min_gw(name, members) + 20.0, dn_slot_w - 8)
                 builder.add_solid_block(
                     members[0],
-                    Rect(dn_x + (gw - BLOCK_W) / 2, gy + (gh - BLOCK_H) / 2, BLOCK_W, BLOCK_H),
+                    Rect(g_cx - bw / 2.0, gy + (gh - bh) / 2.0, bw, bh),
                     cell_id=f"dn_block_{g_slug}",
                 )
             else:
+                gw = min(_tb_min_gw(name, members), dn_slot_w - 8)
+                gx = g_cx - gw / 2.0
                 builder.add_frame(
-                    name, Rect(dn_x, gy, gw, gh),
+                    name, Rect(gx, gy, gw, gh),
                     cell_id=f"dn_frame_{g_slug}",
                     dashed=True, stroke_width=2,
                 )
                 iy = gy + FRAME_PAD + 20
+                bw = gw - FRAME_PAD * 2
                 for m in members:
                     builder.add_solid_block(
-                        m, Rect(dn_x + FRAME_PAD, iy, BLOCK_W, BLOCK_H),
+                        m, Rect(gx + FRAME_PAD, iy, bw, BLOCK_H),
                         cell_id=f"dn_block_{g_slug}_{_slug(m)}",
                     )
                     iy += BLOCK_H + BLOCK_GAP
 
-            # TB connection units from APP bottom → downstream group top
-            app_exit_x = app_x_tb + (i + 0.5) / n_dn * APP_FRAME_W
             n_mws = len(mws)
-            total_cu_w = n_mws * CONN_BOX_W + max(0, n_mws - 1) * TB_CU_H_SPACING
-            cu_start_x = app_exit_x - total_cu_w / 2.0 + CONN_BOX_W / 2.0
+            cu_total_w = n_mws * CONN_BOX_W + max(0, n_mws - 1) * TB_CU_H_SPACING
+            cu_start_x = g_cx - cu_total_w / 2.0 + CONN_BOX_W / 2.0
             for j, mw in enumerate(mws):
-                cu_cx = cu_start_x + j * (CONN_BOX_W + TB_CU_H_SPACING)
+                cu_x = cu_start_x + j * (CONN_BOX_W + TB_CU_H_SPACING)
                 builder.add_tb_connection_unit(
-                    abs_x=cu_cx,
-                    y_top=dn_conn_y_top,
-                    y_bot=dn_row_y,
+                    abs_x=cu_x, y_top=dn_conn_top, y_bot=dn_row_top,
                     component_name=mw,
                     svg_content=_find_svg(mw, component_svgs),
                     builtin_spec=_resolve_spec(mw),
                     base_id=f"cu_dn_{g_slug}_{_slug(mw)}",
                 )
-            dn_x += gw + dn_gap
-
-    else:
-        # ============================================================
-        # LR layout (left-to-right): the original column arrangement.
-        #
-        # Adaptive vertical fill:
-        #   Both upstream and downstream columns fill canvas height (= app_h)
-        #   by increasing inter-group gaps proportionally. When one side has
-        #   fewer groups, its gaps are larger so both columns are the same height.
-        #   Single-group columns are vertically centred.
-        # ============================================================
-        canvas_w = int(_ltr_w)
-        canvas_h = max(int(_ltr_h), int(canvas_w / Z5_PANEL_ASPECT))
-
-        # ---- adaptive vertical gap helpers ----
-        def _col_start_and_gap(groups: List[Tuple[str, List[str], List[str]]], target_h: float):
-            """Returns (start_y, gap) so groups fill target_h from start_y."""
-            n = len(groups)
-            if n == 0:
-                return TOP, GROUP_GAP
-            natural_h = sum(frame_h(len(m), len(mws)) for _, m, mws in groups)
-            if n == 1:
-                return TOP + (target_h - natural_h) / 2.0, GROUP_GAP
-            gap = (target_h - natural_h) / (n - 1)
-            return TOP, max(GROUP_GAP, gap)
-
-        up_start_y, up_gap = _col_start_and_gap(all_up, app_h)
-        dn_start_y, dn_gap = _col_start_and_gap(all_dn, app_h)
-
-        # ---- draw upstream column ----
-        up_y = up_start_y
-        for name, members, mws in all_up:
-            gh = frame_h(len(members), len(mws))
-            g_slug = _slug(name)
-            if len(members) == 1 and name == members[0]:
-                # Centre single block within its frame slot so it aligns
-                # with the connection unit arrow (which is centred in gh).
-                block_y = up_y + (gh - BLOCK_H) / 2
-                builder.add_solid_block(
-                    members[0], Rect(UPSTREAM_COL_X, block_y, BLOCK_W, BLOCK_H),
-                    cell_id=f"up_block_{g_slug}",
-                )
-            else:
-                builder.add_frame(
-                    name, Rect(UPSTREAM_COL_X, up_y, UP_FRAME_W, gh),
-                    cell_id=f"up_frame_{g_slug}",
-                    dashed=True, stroke_width=2,
-                )
-                iy = up_y + FRAME_PAD + 20
-                for m in members:
-                    builder.add_solid_block(
-                        m, Rect(UPSTREAM_COL_X + FRAME_PAD, iy, BLOCK_W, BLOCK_H),
-                        cell_id=f"up_block_{g_slug}_{_slug(m)}",
-                    )
-                    iy += BLOCK_H + BLOCK_GAP
-            up_y += gh + up_gap
-
-        # ---- draw left connection units (one per middleware, stacked) ----
-        up_y = up_start_y
-        for name, members, mws in all_up:
-            gh = frame_h(len(members), len(mws))
-            g_slug = _slug(name)
-            total_conn_h = len(mws) * CONN_UNIT_H + max(0, len(mws) - 1) * CONN_UNIT_GAP
-            conn_start_y = up_y + (gh - total_conn_h) / 2
-            for i, mw in enumerate(mws):
-                cu_y = conn_start_y + i * (CONN_UNIT_H + CONN_UNIT_GAP)
-                builder.add_connection_unit(
-                    abs_x=CONN_LEFT_X, abs_y=cu_y,
-                    component_name=mw,
-                    svg_content=_find_svg(mw, component_svgs),
-                    builtin_spec=_resolve_spec(mw),
-                    base_id=f"cu_up_{g_slug}_{_slug(mw)}",
-                )
-            up_y += gh + up_gap
-
-        # ---- draw app frame ----
-        builder.add_frame(
-            knowledge.app_name or "Application",
-            Rect(APP_COL_X, TOP, APP_FRAME_W, app_h),
-            cell_id=f"app_frame_{app_slug}",
-        )
-        _draw_app_contents(APP_COL_X, TOP)
-
-        # ---- draw right connection units (one per middleware, stacked) ----
-        dn_y = dn_start_y
-        for name, members, mws in all_dn:
-            gh = frame_h(len(members), len(mws))
-            g_slug = _slug(name)
-            total_conn_h = len(mws) * CONN_UNIT_H + max(0, len(mws) - 1) * CONN_UNIT_GAP
-            conn_start_y = dn_y + (gh - total_conn_h) / 2
-            for i, mw in enumerate(mws):
-                cu_y = conn_start_y + i * (CONN_UNIT_H + CONN_UNIT_GAP)
-                builder.add_connection_unit(
-                    abs_x=CONN_RIGHT_X, abs_y=cu_y,
-                    component_name=mw,
-                    svg_content=_find_svg(mw, component_svgs),
-                    builtin_spec=_resolve_spec(mw),
-                    base_id=f"cu_dn_{g_slug}_{_slug(mw)}",
-                )
-            dn_y += gh + dn_gap
-
-        # ---- draw downstream column ----
-        dn_y = dn_start_y
-        for name, members, mws in all_dn:
-            gh = frame_h(len(members), len(mws))
-            g_slug = _slug(name)
-            if len(members) == 1 and name == members[0]:
-                # Centre single block within its frame slot so it aligns
-                # with the connection unit arrow (which is centred in gh).
-                block_y = dn_y + (gh - BLOCK_H) / 2
-                builder.add_solid_block(
-                    members[0], Rect(DOWNSTREAM_COL_X, block_y, BLOCK_W, BLOCK_H),
-                    cell_id=f"dn_block_{g_slug}",
-                )
-            else:
-                builder.add_frame(
-                    name, Rect(DOWNSTREAM_COL_X, dn_y, UP_FRAME_W, gh),
-                    cell_id=f"dn_frame_{g_slug}",
-                    dashed=True, stroke_width=2,
-                )
-                iy = dn_y + FRAME_PAD + 20
-                for m in members:
-                    builder.add_solid_block(
-                        m, Rect(DOWNSTREAM_COL_X + FRAME_PAD, iy, BLOCK_W, BLOCK_H),
-                        cell_id=f"dn_block_{g_slug}_{_slug(m)}",
-                    )
-                    iy += BLOCK_H + BLOCK_GAP
-            dn_y += gh + dn_gap
 
     xml = builder.build(canvas_w=canvas_w, canvas_h=canvas_h)
     svg = _make_svg_wrapper(xml, canvas_w, canvas_h)

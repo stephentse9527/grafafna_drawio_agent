@@ -726,30 +726,33 @@ When a group has multiple middlewares: units are placed **side-by-side horizonta
 
 | Property | Value |
 |---|---|
-| Total height | **148 px** |
-| Arrow direction | vertical, `exitX=0.5;exitY=1` (exits bottom-center of source) |
+| Connection gap height | **120 px** (fixed) — ~41 px visible arrow on each side of the 38 px icon box |
+| Arrow direction | vertical, fixed-geometry `source_point → target_point`, `edgeStyle=none;rounded=0` |
 | Arrow color | `cs.healthy_stroke`, 2 px, bidirectional block arrows |
-| Icon box | 89 × 38 px — **identical to LR box** |
-| Icon box Y offset | **50 px** from arrow source point |
+| Icon box | 89 × 38 px — **identical to LR box**, centred vertically in the 120 px gap |
 | Side-by-side gap | 10 px between consecutive units in same group |
 | Font color | `#FFFFFF`, `fontFamily=Times New Roman`, `fontSize=12` |
 
 ### Adaptive Fill Rules
 The diagram always fills the full Z5-MAIN panel canvas (no large whitespace bands).
 
-**LR mode**: Both upstream and downstream columns are stretched to the same height as the tallest column (= `app_h`) by distributing extra vertical space as larger inter-group gaps.  
-Formula: `gap = (app_h − sum_of_frame_heights) / (n_groups − 1)`, minimum `GROUP_GAP=20`.  
-If only 1 group: the single group is vertically centred in `app_h`.
+**LR mode**: Groups are drawn at their **natural compact height** (blocks always `BLOCK_H=36 px`, frames sized to content). Canvas height = `max(total_up_col_h, total_dn_col_h, app_natural_h, 240)`. Groups are then distributed with even gaps:  
+Formula: `gap = (usable_h − sum_of_natural_heights) / (n_groups − 1)`, capped at `MAX_GAP=80 px`, minimum `LR_GROUP_GAP=16 px`. The whole column is re-centred if the gap was capped.  
+If only 1 group: the single group is vertically centred in the usable height.  
+App frame height = its natural content height, vertically centred in the canvas.
 
-**TB mode**: Both upstream and downstream rows are stretched to fill `canvas_w − 2×TB_MARGIN` by distributing extra horizontal space as larger inter-group gaps.  
-Formula: `gap = (avail_w − sum_of_group_widths) / (n_groups − 1)`, minimum `TB_H_GAP=16`.  
+**LR connection routing**: Each connection uses an **elbow (right-angle bend)** near the APP wall so that arrows always physically reach the APP frame even when the group's center-Y differs from the APP port Y. The middleware icon-box sits on the long horizontal segment at group center-Y. All bends are hard right-angles (`rounded=0`; no curved arcs).
+
+**TB mode**: Groups are drawn at their natural compact height and **horizontally centred** within their row (row height = tallest natural group height in that row). Business functions inside the APP frame are laid out in a **2-column grid** to reduce app frame height. Connection gap between rows and APP frame is fixed at **120 px**.  
+Upstream/downstream rows use equal-width horizontal slots (`dynamic_app_w / n_groups`); groups are centred within their slot.  
 If only 1 group: the single group is horizontally centred.
 
 ### Gate 6-B Style Validation Checks
 When reviewing the generated `.drawio` file, verify:
 - `fillColor=#111217` present in all connection unit boxes
 - `strokeColor=#73BF69` or `strokeColor=#00b050` on connection arrows and boxes
-- LR arrows have `exitX=` in style; TB arrows have `exitX=0.5;exitY=1`
+- All arrows have `rounded=0` (no curved arcs — hard right-angle bends only)
+- LR arrows have `edgeStyle=none` in style; TB arrows also have `edgeStyle=none` (no `exitX/entryX` constraints on fixed-geometry edges)
 - No plain inline-label arrows used for connection zones (style must contain `edgeStyle=none` + `strokeWidth=2`)
 
 ---
@@ -843,12 +846,14 @@ for s in infra_group_styles:
     if "dashed=1" not in s:
         errors.append(f"Infra group frame missing dashed=1 in style: {s[:80]}")
 
-# 4. Connection arrows must use exitX/entryX (LR) OR edgeStyle=none (TB labeled arrows)
+# 4. All connection arrows must use edgeStyle=none (both LR and TB use fixed-geometry edges)
 arrow_styles = re.findall(r'id="[^"]*_arrow"[^>]*style="([^"]*)"', content)
 for s in arrow_styles:
-    # LR arrows: exitX=1;exitY=0.5  |  TB arrows: exitX=0.5;exitY=1  |  both also have edgeStyle=none
-    if "exitX=" not in s and "edgeStyle=none" not in s:
-        errors.append(f"Connection arrow missing exitX/entryX or edgeStyle=none: {s[:80]}")
+    # All arrows: edgeStyle=none + rounded=0 (hard right-angle bends, no curves)
+    if "edgeStyle=none" not in s:
+        errors.append(f"Connection arrow missing edgeStyle=none: {s[:80]}")
+    if "rounded=0" not in s:
+        errors.append(f"Connection arrow missing rounded=0 (curved arcs not allowed): {s[:80]}")
 
 # 5. No duplicate cell IDs
 ids = re.findall(r'\bid="([^"]+)"', content)
@@ -877,9 +882,9 @@ else:
 | Infra group box | `dashed=1; dashPattern=8 4; strokeColor=#888888; strokeWidth=2; fillColor=none` |
 | App frame (main app box) | Solid, `strokeColor` = color scheme green, no dashed |
 | Infra item boxes | Rounded, `fillColor=#1a1d23`, `strokeColor` = color scheme green |
-| LR connection arrows | `edgeStyle=none;exitX=1;exitY=0.5;strokeWidth=2` — full icon-box unit (arrow + 89×38 box + icon/label) |
-| TB connection arrows | `edgeStyle=none;exitX=0.5;exitY=1;strokeWidth=2` — **same icon-box unit as LR**, oriented vertically (148px span) |
-| Infra layout | 2 columns per row (`INFRA_COLS=2`), grid inside group box |
+| LR connection arrows | `edgeStyle=none;rounded=0;strokeWidth=2` — elbow-routed fixed-geometry arrow; icon-box centred on long segment at group center-Y; bend 20 px from APP wall |
+| TB connection arrows | `edgeStyle=none;rounded=0;strokeWidth=2` — vertical fixed-geometry arrow; icon-box centred in 120 px gap; no `exitX/entryX` constraints |
+| Infra layout | 2 columns per row (`INFRA_COLS=2`), grid inside group box; TB app frame also uses 2-column grid for business function blocks |
 
 **Layout direction auto-selection rules (MANDATORY):**
 
@@ -893,10 +898,11 @@ else:
 
 - **LR (left-to-right)**: `[Upstream col] ←→ [291px conn-unit] ←→ [APP frame] ←→ [291px conn-unit] ←→ [Downstream col]`
   Connection zone = full graphical icon-box unit (arrow + 89×38 box + middleware icon + label).
-- **TB (top-to-bottom)**: `[Upstream row]` ↕ `[148px conn-unit]` ↕ `[APP frame]` ↕ `[148px conn-unit]` ↕ `[Downstream row]`
-  Connection zone = **same icon-box unit as LR** (same 89×38 box, same icon/label), oriented vertically with `exitX=0.5;exitY=1`.
-  When a group has multiple middlewares: units are placed side-by-side horizontally, centred on the group's entry/exit point on the APP frame edge.
-  Upstream/downstream rows are spread horizontally with adaptive gap fill to cover the full canvas width.
+- **TB (top-to-bottom)**: `[Upstream row]` ↕ `[120px conn-gap]` ↕ `[APP frame]` ↕ `[120px conn-gap]` ↕ `[Downstream row]`
+  Connection zone = **same icon-box unit as LR** (same 89×38 box, same icon/label), oriented vertically. Arrow is fixed-geometry (`edgeStyle=none;rounded=0`), no `exitX/entryX`.
+  When a group has multiple middlewares: units are placed side-by-side horizontally, centred on the group center-X.
+  Business functions inside APP frame use a **2-column grid** to keep app height compact.
+  Groups use natural compact heights (no stretching); each group is centred within its equal-width horizontal slot.
 
 **Canvas size target (Z5-MAIN panel fit):**
 
@@ -943,7 +949,7 @@ Use `read/viewImage` or `browser/openBrowserPage` with `file:///ABSOLUTE_PATH/ou
 | 1 | All blocks visible | Every upstream, downstream, and business function block has a visible label |
 | 2 | APP frame | Present, labelled with the correct app name, solid green border |
 | 3 | Connection units | Each arrow is straight; icon box is centred on the arrow; icon box label is readable |
-| 4 | Block-arrow alignment | Each upstream/downstream block center-Y matches its connection unit arrow center-Y (visual alignment) |
+| 4 | Block-arrow alignment | Each upstream/downstream block has its connection arrow reaching the APP frame; LR arrows use right-angle elbow bends when group center-Y ≠ APP port-Y; no floating/disconnected arrows |
 | 5 | Infra grid | Infrastructure items inside APP frame are in a neat 2-column grid with visible labels |
 | 6 | No clipping | No element is cut off at a canvas edge |
 | 7 | No overlap | No two labelled boxes overlap each other |
