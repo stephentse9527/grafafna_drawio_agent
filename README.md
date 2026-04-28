@@ -7,6 +7,8 @@ DrawIO flow diagram showing all upstreams, app components, and downstreams.
 **No Anthropic API key required.** The agent uses whichever model you have
 selected in VS Code Copilot (e.g. Claude Sonnet, GPT-4o, etc.).
 
+The end-to-end workflow is documented in [`docs/workflow.drawio`](docs/workflow.drawio).
+
 ---
 
 ## How It Works
